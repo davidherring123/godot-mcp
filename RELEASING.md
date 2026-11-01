@@ -19,6 +19,8 @@ The default version comes from `internal/version/VERSION`. When bumping the
 source version, update that file and `internal/addon/godot_mcp/plugin.cfg`
 together; a test checks that they match. `make release-addon` uses this default,
 or pass `VERSION` to stamp a specific release into both the host and addon.
+Packaging stamps the selected version into both the archived `plugin.cfg` and
+the host binary.
 
 ```sh
 make release-addon VERSION=0.1.0
