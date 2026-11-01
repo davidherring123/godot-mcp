@@ -8,8 +8,20 @@ configure AI clients from the editor's **Godot MCP** panel; there is no public
 
 ## Build
 
+Addon `.uid` sidecars are excluded from release archives and development
+installs. Godot generates them in the destination project; the canonical addon
+source tree ignores these generated files.
+
+Use the unprefixed numeric version for `VERSION`, the release tag, and artifact
+names—for example, `0.1.0` (no `v` prefix).
+
+The default version comes from `internal/version/VERSION`. When bumping the
+source version, update that file and `internal/addon/godot_mcp/plugin.cfg`
+together; a test checks that they match. `make release-addon` uses this default,
+or pass `VERSION` to stamp a specific release into both the host and addon.
+
 ```sh
-make release-addon VERSION=v0.1.0
+make release-addon VERSION=0.1.0
 ```
 
 Artifacts are written to `dist/` (ignored by git; do not commit them):
@@ -21,6 +33,9 @@ Artifacts are written to `dist/` (ignored by git; do not commit them):
 | `godot-mcp-addon-<version>-windows-amd64.zip` | Per-platform Windows download. |
 | `SHA256SUMS` | SHA-256 checksums for all archives. |
 
+Artifact names use the unprefixed version, for example
+`godot-mcp-addon-0.1.0.zip`.
+
 Supported targets: darwin arm64/amd64, linux amd64/arm64, and windows amd64.
 Builds use `CGO_ENABLED=0`, `GOOS`, `GOARCH`, `-trimpath`, `-buildvcs=false`,
 and an empty Go build ID. Archive entries are sorted and timestamps are
@@ -31,7 +46,7 @@ Set `SOURCE_DATE_EPOCH` to use a fixed Unix timestamp instead of the default
 1980-01-01 UTC:
 
 ```sh
-SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) make release-addon VERSION=v0.1.0
+SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) make release-addon VERSION=0.1.0
 ```
 
 Run the packaging tests with:

@@ -30,9 +30,10 @@ var ErrGodotNotFound = errors.New("godot executable not found")
 type Session struct {
 	Client *bridge.Client
 
-	tempDir string
-	root    string
-	logf    func(format string, args ...any)
+	tempDir   string
+	root      string
+	godotPath string
+	logf      func(format string, args ...any)
 
 	command *exec.Cmd
 	done    chan error
@@ -42,6 +43,66 @@ type Session struct {
 
 func (session *Session) Root() string {
 	return session.root
+}
+
+// GameOutput is the captured stdout and stderr of one fresh game process.
+type GameOutput struct {
+	Stdout string
+	Stderr string
+}
+
+// RunGameScript executes a script as a fresh non-editor process against the
+// session project. A separate process loads UIDs only from
+// .godot/uid_cache.bin, so engine "invalid UID" warnings on stderr expose cache
+// persistence problems that the running editor hides.
+func (session *Session) RunGameScript(
+	scriptPath string,
+	args ...string,
+) (GameOutput, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	commandArgs := []string{
+		"--headless",
+		"--path",
+		session.root,
+		"--script",
+		scriptPath,
+	}
+
+	if len(args) > 0 {
+		commandArgs = append(commandArgs, "--")
+		commandArgs = append(commandArgs, args...)
+	}
+
+	command := exec.CommandContext(ctx, session.godotPath, commandArgs...)
+
+	var stdout, stderr bytes.Buffer
+
+	command.Stdout = &stdout
+	command.Stderr = &stderr
+
+	err := command.Run()
+
+	output := GameOutput{
+		Stdout: stdout.String(),
+		Stderr: stderr.String(),
+	}
+
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return output, fmt.Errorf("game process timed out: %w", ctx.Err())
+	}
+
+	var exitError *exec.ExitError
+
+	if errors.As(err, &exitError) {
+		return output, fmt.Errorf(
+			"game process exited with code %d",
+			exitError.ExitCode(),
+		)
+	}
+
+	return output, err
 }
 
 func Start(outputLogf func(format string, args ...any)) (*Session, error) {
@@ -91,9 +152,10 @@ func Start(outputLogf func(format string, args ...any)) (*Session, error) {
 	}
 
 	session := &Session{
-		tempDir: tempDir,
-		root:    filepath.Join(tempDir, "project"),
-		logf:    logf,
+		tempDir:   tempDir,
+		root:      filepath.Join(tempDir, "project"),
+		godotPath: godotPath,
+		logf:      logf,
 	}
 
 	logf("Copying core project to %s", session.root)

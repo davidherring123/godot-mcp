@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/davidherring123/godot-mcp/internal/addon"
 )
 
 // TestSceneEditSessionDefersHistoryAndUndoesInOrder exercises the session
@@ -79,6 +81,63 @@ func TestSceneEditSessionDefersHistoryAndUndoesInOrder(t *testing.T) {
 
 	if !strings.Contains(string(output), "SESSION_HISTORY_OK") {
 		t.Fatalf("session history script did not report success:\n%s", output)
+	}
+}
+
+// TestPropertyCodecNestedUndoRestoresLeafAndIdentity exercises the shared
+// PropertyCodec and SceneEditSession together without an editor. It checks that
+// a nested resource write is copy-on-write, that the original shared resource is
+// untouched, and that one undo step restores both the leaf value and the
+// original resource identity.
+func TestPropertyCodecNestedUndoRestoresLeafAndIdentity(t *testing.T) {
+	godot := findGodot(t)
+	root := t.TempDir()
+
+	if err := os.WriteFile(
+		filepath.Join(root, "project.godot"),
+		[]byte("config_version=5\n\n[application]\n\nconfig/name=\"NestedCodecTest\"\n"),
+		0644,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := addon.Install(root); err != nil {
+		t.Fatalf("installing addon: %v", err)
+	}
+
+	// The script references addon classes by class_name. A short editor scan
+	// generates the global script class cache used by the headless run below.
+	scan := exec.Command(godot, "--headless", "--editor", "--path", root, "--quit-after", "2")
+	scan.Dir = root
+
+	if output, err := scan.CombinedOutput(); err != nil {
+		t.Fatalf("scanning addon classes: %v\n%s", err, output)
+	}
+
+	if err := os.WriteFile(
+		filepath.Join(root, "nested_codec_test.gd"),
+		[]byte(nestedCodecScript),
+		0644,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	command := exec.Command(
+		godot,
+		"--headless",
+		"--path",
+		root,
+		"--script",
+		"res://nested_codec_test.gd",
+	)
+
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("nested codec script failed: %v\n%s", err, output)
+	}
+
+	if !strings.Contains(string(output), "NESTED_CODEC_OK") {
+		t.Fatalf("nested codec script did not report success:\n%s", output)
 	}
 }
 
@@ -294,6 +353,172 @@ func _initialize() -> void:
 
     for failure in failures:
         print("SESSION_HISTORY_FAILURE: %s" % failure)
+
+    quit(1)
+
+func _check(condition: bool, message: String) -> void:
+    if not condition:
+        failures.append(message)
+`
+
+const nestedCodecScript = `extends SceneTree
+
+const Codec = preload("res://addons/godot_mcp/core/property_codec.gd")
+const Session = preload("res://addons/godot_mcp/core/scene/scene_edit_session.gd")
+
+class FakeHistory:
+    extends RefCounted
+
+    const NO_ARG := &"__godot_mcp_no_arg__"
+
+    var undo_redo := UndoRedo.new()
+
+    func create_action(
+        name: String,
+        merge_mode: int,
+        _custom_context = null,
+        backward_undo_ops := true
+    ) -> void:
+        undo_redo.create_action(name, merge_mode, backward_undo_ops)
+
+    func commit_action(execute := true) -> void:
+        undo_redo.commit_action(execute)
+
+    func add_do_method(
+        object: Object,
+        method: StringName,
+        arg1 = NO_ARG,
+        arg2 = NO_ARG,
+        arg3 = NO_ARG,
+        arg4 = NO_ARG
+    ) -> void:
+        undo_redo.add_do_method(
+            Callable(object, method).bindv(_arguments(arg1, arg2, arg3, arg4))
+        )
+
+    func add_undo_method(
+        object: Object,
+        method: StringName,
+        arg1 = NO_ARG,
+        arg2 = NO_ARG,
+        arg3 = NO_ARG,
+        arg4 = NO_ARG
+    ) -> void:
+        undo_redo.add_undo_method(
+            Callable(object, method).bindv(_arguments(arg1, arg2, arg3, arg4))
+        )
+
+    func add_do_property(object: Object, property: StringName, value: Variant) -> void:
+        undo_redo.add_do_property(object, property, value)
+
+    func add_undo_property(object: Object, property: StringName, value: Variant) -> void:
+        undo_redo.add_undo_property(object, property, value)
+
+    func add_do_reference(object: Object) -> void:
+        undo_redo.add_do_reference(object)
+
+    func add_undo_reference(object: Object) -> void:
+        undo_redo.add_undo_reference(object)
+
+    func _arguments(arg1, arg2, arg3, arg4) -> Array:
+        var result: Array = []
+
+        for argument in [arg1, arg2, arg3, arg4]:
+            if typeof(argument) == TYPE_STRING_NAME and argument == NO_ARG:
+                break
+
+            result.append(argument)
+
+        return result
+
+var failures: Array[String] = []
+
+func _initialize() -> void:
+    var shader := Shader.new()
+    shader.code = "shader_type canvas_item;\nuniform float curvature = 0.5;\n"
+
+    var material := ShaderMaterial.new()
+    material.shader = shader
+    material.set("shader_parameter/curvature", 0.25)
+
+    var root := Node2D.new()
+    root.name = "Root"
+
+    var actor := Sprite2D.new()
+    actor.name = "Actor"
+    actor.position = Vector2(1, 2)
+    actor.material = material
+    root.add_child(actor)
+
+    var other := Sprite2D.new()
+    other.name = "Other"
+    other.material = material
+    root.add_child(other)
+
+    var decoded = Codec.decode_properties(actor, {
+        "position:x": 5.0,
+        "material:shader_parameter/curvature": 0.9,
+    })
+
+    _check(
+        decoded.error == null,
+        "decode failed: %s" % (decoded.error.message if decoded.error else "")
+    )
+
+    var history := FakeHistory.new()
+    var session = Session.new(history, "nested test", root)
+
+    session.create_action("nested", UndoRedo.MERGE_DISABLE, root, true)
+
+    for name in Codec.property_order(decoded.converted):
+        session.add_do_property(actor, name, decoded.converted[name])
+        session.add_undo_property(actor, name, decoded.previous[name])
+
+    session.commit_action()
+    session.finish()
+
+    var copy: ShaderMaterial = actor.material
+
+    _check(actor.position.x == 5.0, "nested position was not applied")
+    _check(copy != material, "nested resource write did not copy the material")
+    _check(
+        float(copy.get("shader_parameter/curvature")) == 0.9,
+        "nested uniform was not applied"
+    )
+    _check(
+        float(material.get("shader_parameter/curvature")) == 0.25,
+        "original shared material was mutated"
+    )
+    _check(other.material == material, "sibling material identity changed")
+    _check(history.undo_redo.get_history_count() == 1, "expected one undo step")
+
+    history.undo_redo.undo()
+
+    _check(actor.position.x == 1.0, "undo did not restore position.x")
+    _check(actor.material == material, "undo did not restore material identity")
+    _check(
+        float(actor.material.get("shader_parameter/curvature")) == 0.25,
+        "undo did not restore the leaf value"
+    )
+
+    history.undo_redo.redo()
+
+    _check(actor.position.x == 5.0, "redo did not restore position.x")
+    _check(actor.material == copy, "redo did not restore the copied material")
+    _check(
+        float(actor.material.get("shader_parameter/curvature")) == 0.9,
+        "redo did not restore the leaf value"
+    )
+
+    root.free()
+
+    if failures.is_empty():
+        print("NESTED_CODEC_OK")
+        quit(0)
+        return
+
+    for failure in failures:
+        print("NESTED_CODEC_FAILURE: %s" % failure)
 
     quit(1)
 

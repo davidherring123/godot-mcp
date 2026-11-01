@@ -1,0 +1,13 @@
+[gd_scene load_steps=3 format=3]
+
+[sub_resource type="BoxMesh" id="BoxMesh_inlined"]
+size = Vector3(2, 3, 4)
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_inlined"]
+albedo_color = Color(0.2, 0.4, 0.6, 1)
+
+[node name="Main" type="Node3D"]
+
+[node name="Mesh" type="MeshInstance3D" parent="."]
+mesh = SubResource("BoxMesh_inlined")
+material_override = SubResource("StandardMaterial3D_inlined")

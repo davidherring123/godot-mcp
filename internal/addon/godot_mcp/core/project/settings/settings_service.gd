@@ -229,7 +229,7 @@ func apply(request: Request) -> Response:
                 "no changes were saved"
             )
 
-        var kind := str(operation.get("operation", ""))
+        var kind := str(operation.get("operation", "")).trim_prefix("project.settings.")
         var target := str(operation.get("setting", ""))
         var field_error := validate_operation_fields(
             index,
@@ -336,7 +336,7 @@ func _apply_operation_summary(
     operation: Dictionary,
     result: Dictionary
 ) -> Dictionary:
-    var kind := str(operation.get("operation", ""))
+    var kind := str(operation.get("operation", "")).trim_prefix("project.settings.")
     var changed := bool(result.get("changed", true))
     var summary := {
         "index": index,

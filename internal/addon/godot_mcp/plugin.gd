@@ -96,11 +96,25 @@ func _register_instance(port: int) -> void:
         "pid": pid,
         "port": port,
         "project": ProjectSettings.globalize_path("res://"),
-        "version": "dev",
+        "version": _read_plugin_version(),
         "executable": OS.get_executable_path()
     }
 
     file.store_string(JSON.stringify(data, "\t"))
+
+func _read_plugin_version() -> String:
+    var config_path := "res://addons/godot_mcp/plugin.cfg"
+    var script := get_script() as Script
+
+    if script != null and not script.resource_path.is_empty():
+        config_path = script.resource_path.get_base_dir().path_join("plugin.cfg")
+
+    var config := ConfigFile.new()
+
+    if config.load(config_path) != OK:
+        return "unknown"
+
+    return str(config.get_value("plugin", "version", "unknown"))
 
 func _vc_ignore_instance(instances_dir: String) -> void:
     var ignore_path := instances_dir.path_join(".gitignore")

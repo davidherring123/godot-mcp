@@ -1,6 +1,9 @@
 # Local development
 .dev/
 
+# Godot regenerates addon script UIDs in the destination project.
+/internal/addon/godot_mcp/**/*.uid
+
 # Build output
 /bin/
 /dist/

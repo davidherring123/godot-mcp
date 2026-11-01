@@ -2,9 +2,11 @@ class_name SceneService
 extends ActionService
 
 var scene_context: EditorSceneContext
+var filesystem_index: FileSystemIndex
 
 func _init(context: EditorSceneContext) -> void:
     scene_context = context
+    filesystem_index = FileSystemIndex.new(context.editor)
 
 func get_actions() -> Dictionary:
     return {
@@ -13,6 +15,7 @@ func get_actions() -> Dictionary:
         "scene.create": ActionHandler.new(create_scene, false, false, false),
         "scene.tree": ActionHandler.new(get_tree, true, false, true),
         "scene.save": ActionHandler.new(save, true, false, true),
+        "scene.reload": ActionHandler.new(reload_scene, true, false, true),
         "validate.scene": ActionHandler.new(validate_scene, true, false, true),
     }
 
@@ -162,6 +165,17 @@ func create_scene(request: Request) -> Response:
             "Could not save scene %s: %s" % [path, error_string(save_error)]
         )
 
+    # Register the UID that ResourceSaver already wrote into the scene file.
+    # A new directory is not in the editor filesystem index yet, so the
+    # save callback's update_file() cannot do this on its own.
+    var deadline := filesystem_index.deadline_after(
+        FileSystemIndex.DEFAULT_TIMEOUT_SECONDS
+    )
+    var registration := filesystem_index.registration(
+        path,
+        await filesystem_index.ensure_registered(path, deadline)
+    )
+
     var open_response = await _activate_scene(path)
 
     if not open_response.code.is_empty():
@@ -170,11 +184,16 @@ func create_scene(request: Request) -> Response:
     var active := scene_context.editor.get_edited_scene_root()
     var serialized := {}
 
-    for property_name in values:
-        serialized[property_name] = VariantSerializer.serialize(active.get(property_name))
+    for property_path in values:
+        serialized[property_path] = VariantSerializer.serialize(
+            PropertyCodec.read_property(active, str(property_path))
+        )
 
     var result: Dictionary = open_response.result
     result["properties"] = serialized
+
+    for key in registration:
+        result[key] = registration[key]
 
     return Response.success(result)
 
@@ -225,6 +244,151 @@ func get_tree(_request: Request) -> Response:
 
 func save(_request: Request) -> Response:
     return scene_context.save()
+
+func reload_scene(request: Request) -> Response:
+    var discard_unsaved = request.params.get("discard_unsaved", false)
+
+    if not discard_unsaved is bool:
+        return Response.failure(
+            ErrorCode.INVALID_ARGUMENT,
+            "discard_unsaved must be a boolean"
+        )
+
+    var editor := scene_context.editor
+    var root := editor.get_edited_scene_root()
+
+    if root == null:
+        return Response.failure(
+            ErrorCode.FAILED_PRECONDITION,
+            "No scene is currently being edited"
+        )
+
+    var path := root.scene_file_path
+
+    if path.is_empty():
+        return Response.failure(
+            ErrorCode.FAILED_PRECONDITION,
+            "Use the editor's Save As before reloading this scene through godot-mcp"
+        )
+
+    var description := scene_context.describe()
+    var was_unsaved := bool(description["unsaved"])
+
+    if was_unsaved and not discard_unsaved:
+        return Response.failure(
+            ErrorCode.FAILED_PRECONDITION,
+            "Scene %s has unsaved changes; save it first or pass discard_unsaved=true to discard them" % path
+        )
+
+    if not editor.get_open_scenes().has(path):
+        return Response.failure(
+            ErrorCode.FAILED_PRECONDITION,
+            "Scene is not open in the editor: %s" % path
+        )
+
+    if not FileAccess.file_exists(path):
+        return Response.failure(
+            ErrorCode.NOT_FOUND,
+            "Scene not found: %s" % path
+        )
+
+    # Validate that the file can still be parsed before asking the editor to
+    # remove the active scene. reload_scene_from_path() reports no error and
+    # leaves the scene closed when loading fails, so a corrupt external edit
+    # must be rejected here instead.
+    if not ResourceLoader.load(
+        path, "PackedScene", ResourceLoader.CACHE_MODE_IGNORE
+    ) is PackedScene:
+        return Response.failure(
+            ErrorCode.ACTION_FAILED,
+            "Could not load scene from disk: %s" % path
+        )
+
+    var previous_instance := root.get_instance_id()
+    var deadline := Time.get_ticks_msec() + 10000
+
+    editor.reload_scene_from_path(path)
+
+    while Time.get_ticks_msec() < deadline:
+        await editor.get_base_control().get_tree().process_frame
+
+        root = editor.get_edited_scene_root()
+
+        if (
+            root != null
+            and root.scene_file_path == path
+            and root.get_instance_id() != previous_instance
+        ):
+            var note := (
+                "Reloaded the scene from disk. The scene's undo/redo history "
+                + "was cleared."
+            )
+
+            if was_unsaved:
+                note += (
+                    " Unsaved changes were discarded because discard_unsaved "
+                    + "was true; this action did not save them."
+                )
+            else:
+                note += " This action did not save the scene."
+
+            note += (
+                " External script resources may still be cached by the editor; "
+                + "stale_scripts is best effort and does not guarantee that "
+                + "every script cache was refreshed."
+            )
+
+            return Response.success({
+                "scene": path,
+                "reloaded": true,
+                "was_unsaved": was_unsaved,
+                "discarded_unsaved": was_unsaved,
+                "undo_history_cleared": true,
+                "stale_scripts": _stale_scripts(root),
+                "note": note,
+            })
+
+    return Response.failure(
+        ErrorCode.ACTION_FAILED,
+        "Editor did not reload scene: %s" % path
+    )
+
+func _stale_scripts(root: Node) -> Array[String]:
+    var stale: Array[String] = []
+
+    _collect_stale_scripts(root, stale, {})
+
+    return stale
+
+func _collect_stale_scripts(
+    node: Node,
+    stale: Array[String],
+    seen: Dictionary
+) -> void:
+    var script := node.get_script()
+
+    if script != null:
+        var path := str(script.resource_path)
+
+        if not path.is_empty() and not seen.has(path):
+            seen[path] = true
+
+            var loaded_source := str(script.source_code)
+
+            if not loaded_source.is_empty():
+                var fresh := ResourceLoader.load(
+                    path, "Script", ResourceLoader.CACHE_MODE_IGNORE
+                ) as Script
+
+                if (
+                    fresh != null
+                    and not fresh.source_code.is_empty()
+                    and fresh.source_code != loaded_source
+                ):
+                    stale.append(path)
+
+    for child in node.get_children():
+        _collect_stale_scripts(child, stale, seen)
 
 func validate_scene(_request: Request) -> Response:
     var root := scene_context.editor.get_edited_scene_root()

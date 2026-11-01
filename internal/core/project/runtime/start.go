@@ -141,6 +141,7 @@ func Start(projectRoot string, params StartParams) (StatusResult, error) {
 		Scene:           scene,
 		Headless:        params.Headless,
 		StartedAt:       time.Now().UTC(),
+		RunnerProtocol:  RunnerProtocolVersion,
 	}
 
 	if err := writeJSONAtomic(filepath.Join(directory, "session.json"), metadata); err != nil {

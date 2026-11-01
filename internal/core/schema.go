@@ -9,6 +9,7 @@ import (
 
 	"github.com/davidherring123/godot-mcp/internal/core/node"
 	"github.com/davidherring123/godot-mcp/internal/core/project/editor"
+	"github.com/davidherring123/godot-mcp/internal/core/project/filesystem"
 	"github.com/davidherring123/godot-mcp/internal/core/project/input"
 	"github.com/davidherring123/godot-mcp/internal/core/project/runtime"
 	"github.com/davidherring123/godot-mcp/internal/core/project/settings"
@@ -126,19 +127,36 @@ func define[P, R any](
 }
 
 var (
+	FileSystemScan = define[filesystem.ScanParams, filesystem.ScanResult](
+		filesystem.ScanName,
+		"Refresh the editor resource filesystem and verify optional paths and existing UIDs without generating UIDs",
+		filesystem.Scan,
+		withIdempotent(),
+	)
+	EditorCapture = define[editor.CaptureParams, editor.CaptureResult](
+		editor.CaptureName,
+		"Capture the editor's 2D or 3D viewport as a PNG; requires a rendering display, excludes editor UI overlays",
+		editor.Capture,
+		withAdditive(),
+	)
 	EditorStatus = define[editor.StatusParams, editor.StatusResult](
 		editor.StatusName,
 		"Show whether a Godot editor with the godot-mcp addon is running for this project",
 		editor.Status,
 		withReadOnly(),
 	)
-	SceneList    = define[scene.ListParams, scene.ListResult](scene.ListName, "List scenes in the project", scene.List, withReadOnly())
+	SceneList    = define[scene.ListParams, scene.ListResult](scene.ListName, "List scenes in the project, excluding addon scenes unless include_addons is true", scene.List, withReadOnly())
 	SceneCurrent = define[scene.CurrentParams, scene.CurrentResult](scene.CurrentName, "Show the active editor scene", scene.Current, withReadOnly())
 	SceneOpen    = define[scene.OpenParams, scene.OpenResult](scene.OpenName, "Open or activate an editor scene", scene.Open, withAdditive())
 	SceneCreate  = define[scene.CreateParams, scene.CreateResult](scene.CreateName, "Create a new scene file and open it in the editor", scene.Create, withAdditive())
-	SceneSave    = define[scene.SaveParams, scene.SaveResult](scene.SaveName, "Save the active editor scene", scene.Save)
-	SceneTree    = define[scene.TreeParams, scene.TreeResult](scene.TreeName, "Show the active editor scene's node tree", scene.Tree, withReadOnly())
-	SceneApply   = define[scene.ApplyParams, scene.ApplyResult](
+	SceneSave    = define[scene.SaveParams, scene.SaveResult](scene.SaveName, "Save the entire active editor scene and report bounded before/after file changes", scene.Save)
+	SceneReload  = define[scene.ReloadParams, scene.ReloadResult](
+		scene.ReloadName,
+		"Reload the active saved scene from disk; refuses unsaved changes unless discard_unsaved is true and clears the scene undo/redo history",
+		scene.Reload,
+	)
+	SceneTree  = define[scene.TreeParams, scene.TreeResult](scene.TreeName, "Show the active editor scene's node tree", scene.Tree, withReadOnly())
+	SceneApply = define[scene.ApplyParams, scene.ApplyResult](
 		scene.ApplyName,
 		"Apply 1-100 ordered node operations to the active scene as one atomic undo step, with best-effort prevalidation, optional dry_run, and deferred history registration",
 		scene.Apply,
@@ -149,8 +167,14 @@ var (
 		validate.Scene,
 		withReadOnly(),
 	)
-	NodeInspect     = define[node.InspectParams, node.InspectResult](node.InspectName, "Inspect a node in the active editor scene", node.Inspect, withReadOnly())
-	NodeSet         = define[node.SetParams, node.SetResult](node.SetName, "Set node properties as one undoable editor action", node.Set)
+	NodeInspect   = define[node.InspectParams, node.InspectResult](node.InspectName, "Inspect a node in the active editor scene", node.Inspect, withReadOnly())
+	NodeOverrides = define[node.OverridesParams, node.OverridesResult](
+		node.OverridesName,
+		"Inspect a linked scene instance's serialized overrides, live values, saved values, and source baselines without saving or reverting",
+		node.Overrides,
+		withReadOnly(),
+	)
+	NodeSet         = define[node.SetParams, node.SetResult](node.SetName, "Set node properties, inline resources, or nested indexed paths as one undoable editor action; nested resource edits make local copies", node.Set)
 	NodeAdd         = define[node.AddParams, node.AddResult](node.AddName, "Add a node to the active editor scene as one undoable editor action", node.Add, withAdditive())
 	NodeInstantiate = define[node.InstantiateParams, node.InstantiateResult](
 		node.InstantiateName,
@@ -170,7 +194,7 @@ var (
 	)
 	ResourceInspect = define[resource.InspectParams, resource.InspectResult](
 		resource.InspectName,
-		"Inspect a resource file's editor-visible properties",
+		"Inspect a resource file or named embedded resource, distinguishing live scene values from disk-loaded values",
 		resource.Inspect,
 		withReadOnly(),
 	)
@@ -216,8 +240,8 @@ var (
 		"Apply ordered project-setting set and unset operations with in-order validation, optional dry_run, and a single project.godot save with best-effort rollback on save failure",
 		settings.Apply,
 	)
-	InputList        = define[input.ListParams, input.ListResult](input.ListName, "List Input Map actions", input.List, withReadOnly())
-	InputInspect     = define[input.InspectParams, input.InspectResult](input.InspectName, "Show one Input Map action and its bindings", input.Inspect, withReadOnly())
+	InputList        = define[input.ListParams, input.ListResult](input.ListName, "List Input Map actions; built-in actions are excluded unless include_builtin is true", input.List, withReadOnly())
+	InputInspect     = define[input.InspectParams, input.InspectResult](input.InspectName, "Show one Input Map action and its bindings, or look up several actions with null for missing names", input.Inspect, withReadOnly())
 	InputAdd         = define[input.AddParams, input.AddResult](input.AddName, "Add an Input Map action and save project.godot immediately", input.Add, withAdditive())
 	InputSet         = define[input.SetParams, input.SetResult](input.SetName, "Set an Input Map action's deadzone and save project.godot immediately", input.Set)
 	InputRename      = define[input.RenameParams, input.RenameResult](input.RenameName, "Rename an Input Map action and save project.godot immediately", input.Rename)
@@ -247,6 +271,24 @@ var (
 		runtime.Capture,
 		withAdditive(),
 	)
+	RuntimeWait = define[runtime.WaitParams, runtime.WaitResult](
+		runtime.WaitName,
+		"Wait for bounded idle or physics frames, elapsed seconds, or both in the running game; the game continues running between calls",
+		runtime.Wait,
+		withAdditive(),
+	)
+	RuntimeLogs = define[runtime.LogsParams, runtime.LogsResult](
+		runtime.LogsName,
+		"Read bounded cursor-based runtime stdout and stderr, including after the session exits",
+		runtime.Logs,
+		withReadOnly(),
+	)
+	RuntimeInput = define[runtime.InputParams, runtime.InputResult](
+		runtime.InputName,
+		"Send ordered synthetic action, key, mouse, or gesture input to the running game with explicit press/release and optional frame spacing; virtual cursor coordinates do not isolate OS input",
+		runtime.Input,
+		withAdditive(),
+	)
 	RuntimeStop = define[runtime.StopParams, runtime.StopResult](
 		runtime.StopName,
 		"Stop the runtime session, waiting for a graceful exit before killing the game process",
@@ -258,15 +300,19 @@ var (
 func All() []ActionDefinition {
 	return []ActionDefinition{
 		EditorStatus,
+		EditorCapture,
+		FileSystemScan,
 		SceneList,
 		SceneCurrent,
 		SceneOpen,
 		SceneCreate,
 		SceneSave,
+		SceneReload,
 		SceneTree,
 		SceneApply,
 		ValidateScene,
 		NodeInspect,
+		NodeOverrides,
 		NodeSet,
 		NodeAdd,
 		NodeInstantiate,
@@ -296,6 +342,9 @@ func All() []ActionDefinition {
 		RuntimeStart,
 		RuntimeStatus,
 		RuntimeCapture,
+		RuntimeWait,
+		RuntimeLogs,
+		RuntimeInput,
 		RuntimeStop,
 	}
 }

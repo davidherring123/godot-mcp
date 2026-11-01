@@ -1,0 +1,16 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Shader" path="res://assets/curvature.gdshader" id="1_shader"]
+
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_shared"]
+shader = ExtResource("1_shader")
+shader_parameter/curvature = 0.25
+
+[node name="Main" type="Node2D"]
+
+[node name="Actor" type="Sprite2D" parent="."]
+position = Vector2(1, 2)
+material = SubResource("ShaderMaterial_shared")
+
+[node name="Other" type="Sprite2D" parent="."]
+material = SubResource("ShaderMaterial_shared")

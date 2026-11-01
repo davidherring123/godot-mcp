@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	productversion "github.com/davidherring123/godot-mcp/internal/version"
 	mcpgo "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -66,7 +67,7 @@ func RunHTTP(ctx context.Context, options Options) error {
 	address := listener.Addr()
 	version := options.Version
 	if version == "" {
-		version = "dev"
+		version = productversion.Current()
 	}
 
 	state := ServerState{

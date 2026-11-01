@@ -1,0 +1,7 @@
+[gd_resource type="Resource" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://cases/resource_path_safety/victim_resource.gd" id="1_script"]
+
+[resource]
+script = ExtResource("1_script")
+value = 7

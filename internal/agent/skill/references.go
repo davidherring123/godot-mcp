@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/davidherring123/godot-mcp/internal/core"
+	productversion "github.com/davidherring123/godot-mcp/internal/version"
 )
 
 // Action describes one canonical MCP action in the generated reference.
@@ -32,6 +33,10 @@ type Reference struct {
 // terminal commands, so every registered action is documented with the same
 // schemas the MCP server exposes.
 func Generate(version string) (map[string][]byte, error) {
+	if version == "" {
+		version = productversion.Current()
+	}
+
 	files := make(map[string][]byte)
 	reference := Reference{Version: version}
 	actions := core.All()
@@ -97,7 +102,7 @@ func render(reference Reference) string {
 	text.WriteString("Generated from godot-mcp ")
 
 	if reference.Version == "" {
-		text.WriteString("dev")
+		text.WriteString(productversion.Current())
 	} else {
 		text.WriteString(reference.Version)
 	}

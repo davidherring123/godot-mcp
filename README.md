@@ -92,11 +92,11 @@ rollback limits, runtime details, client configuration paths, and migration note
 
 | Category | Tools | Purpose |
 | --- | --- | --- |
-| Editor | `editor_status` | Check the connected editor. |
-| Scenes | `scene_list`, `scene_current`, `scene_tree`, `scene_open`, `scene_create`, `scene_save`, `scene_apply` | Browse, create, save, and batch-edit scenes. |
-| Nodes | `node_inspect`, `node_add`, `node_set`, `node_rename`, `node_duplicate`, `node_move`, `node_delete`, `node_instantiate` | Inspect and edit the scene tree. |
+| Editor | `editor_status`, `editor_capture`, `filesystem_scan` | Check the editor, capture its viewport, and refresh resource indexing. |
+| Scenes | `scene_list`, `scene_current`, `scene_tree`, `scene_open`, `scene_create`, `scene_save`, `scene_reload`, `scene_apply` | Browse, create, save, reload, and batch-edit scenes with save-change reports. |
+| Nodes | `node_inspect`, `node_overrides`, `node_add`, `node_set`, `node_rename`, `node_duplicate`, `node_move`, `node_delete`, `node_instantiate` | Inspect overrides and edit the scene tree. |
 | Resources | `resource_inspect`, `resource_create`, `resource_set`, `resource_delete`, `resource_apply` | Inspect and edit resources, individually or in batches. |
 | Project settings | `project_settings_list`, `project_settings_get`, `project_settings_set`, `project_settings_unset`, `project_settings_apply` | Read and update project settings. |
 | Input Map | `input_list`, `input_inspect`, `input_add`, `input_set`, `input_rename`, `input_delete`, `input_event_add`, `input_event_delete`, `input_map_apply` | Manage input actions and event bindings. |
 | Validation | `validate_scene` | Check the active scene for script and serialization errors. |
-| Runtime | `runtime_start`, `runtime_status`, `runtime_capture`, `runtime_stop` | Run the game in a separate process, inspect logs, and capture screenshots. |
+| Runtime | `runtime_start`, `runtime_status`, `runtime_input`, `runtime_wait`, `runtime_logs`, `runtime_capture`, `runtime_stop` | Run the game, send synthetic input, wait for frames, read logs, and capture screenshots. |

@@ -188,6 +188,20 @@ func TestMCPLiveDomainBatchDryRunAndErrors(t *testing.T) {
 	}
 
 	text := mcpText(result)
+	structured, err := json.Marshal(result.StructuredContent)
+	if err != nil {
+		t.Fatalf("encoding structured tool error: %v", err)
+	}
+	var payload struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(structured, &payload); err != nil {
+		t.Fatalf("decoding structured tool error: %v", err)
+	}
+	if payload.Code != "not_found" || !strings.Contains(payload.Message, "operation 0") {
+		t.Fatalf("unexpected structured tool error: %s", structured)
+	}
 
 	for _, expected := range []string{`"code":"not_found"`, "operation 0"} {
 		if !strings.Contains(text, expected) {

@@ -1,0 +1,8 @@
+[gd_scene format=3]
+
+[node name="DiscardAppliedRoot" type="Node2D"]
+
+[node name="World" type="Node2D" parent="."]
+
+[node name="Marker" type="Marker2D" parent="World"]
+position = Vector2(1, 2)

@@ -26,11 +26,20 @@ const (
 	maxLogTail        = 1 << 20
 	defaultStartWait  = 20 * time.Second
 	defaultStopWait   = 5 * time.Second
-	captureTimeout    = 10 * time.Second
 	killWait          = 2 * time.Second
 	maxEmbeddedImage  = 16 << 20
 	sessionRetention  = 7 * 24 * time.Hour
 	startLockStaleFor = 2 * time.Minute
+
+	maxWaitFrames      = 600
+	maxWaitSeconds     = 30.0
+	maxWaitTimeout     = 60 * time.Second
+	waitTimeoutBase    = 5 * time.Second
+	captureWaitBase    = 10 * time.Second
+	waitFrameAllowance = 30.0
+	defaultLogBytes    = 16 << 10
+	maxLogBytes        = 64 << 10
+	minLogBytes        = 4
 )
 
 var (
@@ -45,6 +54,7 @@ type sessionMetadata struct {
 	Scene           string    `json:"scene"`
 	Headless        bool      `json:"headless"`
 	StartedAt       time.Time `json:"started_at"`
+	RunnerProtocol  int       `json:"runner_protocol,omitempty"`
 }
 
 type heartbeatReport struct {
@@ -68,16 +78,26 @@ type exitReport struct {
 	Code     int    `json:"code"`
 	Frames   int    `json:"frames"`
 	UptimeMS int64  `json:"uptime_ms"`
+
+	ReleasedHeldInputs *releasedHeldInputs `json:"released_held_inputs,omitempty"`
+}
+
+type releasedHeldInputs struct {
+	Actions      int `json:"actions"`
+	Keys         int `json:"keys"`
+	MouseButtons int `json:"mouse_buttons"`
 }
 
 type captureResponse struct {
-	OK      bool   `json:"ok"`
-	Code    string `json:"code"`
-	Message string `json:"message"`
-	Width   int    `json:"width"`
-	Height  int    `json:"height"`
-	Bytes   int64  `json:"bytes"`
-	Frame   int    `json:"frames"`
+	OK           bool   `json:"ok"`
+	Code         string `json:"code"`
+	Message      string `json:"message"`
+	Width        int    `json:"width"`
+	Height       int    `json:"height"`
+	Bytes        int64  `json:"bytes"`
+	Frame        int    `json:"frames"`
+	WaitedFrames int    `json:"waited_frames"`
+	WaitedMS     int64  `json:"waited_ms"`
 }
 
 type sessionInfo struct {

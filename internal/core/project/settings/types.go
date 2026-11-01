@@ -63,7 +63,7 @@ type UnsetResult struct {
 //   - set: setting and value
 //   - unset: setting
 type ApplyOperation struct {
-	Operation string          `json:"operation" jsonschema:"enum=set,enum=unset,description=Operation kind."`
+	Operation string          `json:"operation" jsonschema:"enum=set,enum=unset,enum=project.settings.set,enum=project.settings.unset,description=Qualified action name or its short alias. Results use short operation names."`
 	Setting   string          `json:"setting" jsonschema:"minLength=1,description=Project setting name such as display/window/size/viewport_width."`
 	Value     json.RawMessage `json:"value,omitempty" jsonschema:"description=JSON value for set, matching the setting's Godot type."`
 }

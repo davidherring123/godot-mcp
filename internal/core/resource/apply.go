@@ -31,6 +31,7 @@ func validateApply(params ApplyParams) error {
 
 	for index, operation := range params.Operations {
 		target := operation.Resource
+		operation.Operation = canonicalApplyOperation(operation.Operation)
 
 		switch operation.Operation {
 		case "create":
@@ -119,4 +120,19 @@ func validateApply(params ApplyParams) error {
 	}
 
 	return nil
+}
+
+// canonicalApplyOperation maps qualified resource.* action names to the short
+// names used by validation and batch summaries.
+func canonicalApplyOperation(operation string) string {
+	switch operation {
+	case "resource.create":
+		return "create"
+	case "resource.set":
+		return "set"
+	case "resource.delete":
+		return "delete"
+	default:
+		return operation
+	}
 }

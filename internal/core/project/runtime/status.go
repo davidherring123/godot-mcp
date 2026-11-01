@@ -1,6 +1,8 @@
 package runtime
 
 import (
+	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -31,8 +33,9 @@ func Status(projectRoot string, params StatusParams) (StatusResult, error) {
 
 func buildStatus(projectRoot string, info *sessionInfo) StatusResult {
 	result := StatusResult{
-		State:  StateNone,
-		Errors: []RuntimeError{},
+		State:      StateNone,
+		Errors:     []RuntimeError{},
+		ObservedAt: time.Now().UTC().Format(time.RFC3339),
 	}
 
 	if info == nil {
@@ -56,6 +59,14 @@ func buildStatus(projectRoot string, info *sessionInfo) StatusResult {
 			Stdout: directory + "/stdout.log",
 			Stderr: directory + "/stderr.log",
 		}
+	}
+
+	if age, ok := fileAgeMS(filepath.Join(info.directory, "ready.json")); ok {
+		result.ReadyAgeMS = age
+	}
+
+	if age, ok := fileAgeMS(filepath.Join(info.directory, "heartbeat.json")); ok {
+		result.HeartbeatAgeMS = age
 	}
 
 	ready, hasReady := readReady(info.directory)
@@ -106,4 +117,20 @@ func buildStatus(projectRoot string, info *sessionInfo) StatusResult {
 	}
 
 	return result
+}
+
+// fileAgeMS reports how old a runtime session file is. Missing files are
+// reported as unavailable so zero can stay a meaningful age.
+func fileAgeMS(path string) (int64, bool) {
+	stat, err := os.Stat(path)
+	if err != nil {
+		return 0, false
+	}
+
+	age := time.Since(stat.ModTime())
+	if age < 0 {
+		age = 0
+	}
+
+	return age.Milliseconds(), true
 }

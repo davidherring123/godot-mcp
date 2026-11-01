@@ -1424,6 +1424,227 @@ func TestNodeSetThemeOverrideSucceeds(t *testing.T) {
 	}
 }
 
+func TestNodeSetControlLayoutPropertiesSucceeds(t *testing.T) {
+	session := requireSuite(t)
+	path := "res://cases/node_set_control_layout/main.tscn"
+
+	openFixtureScene(t, session, path)
+
+	result := setNodeProperties(
+		t,
+		session,
+		path,
+		"Box/Button",
+		map[string]json.RawMessage{
+			"anchor_bottom": json.RawMessage(`1`),
+			"grow_vertical": json.RawMessage(`2`),
+			"offset_left":   json.RawMessage(`24`),
+		},
+	)
+
+	var anchorBottom, offsetLeft, growVertical float64
+
+	if err := json.Unmarshal(result.Properties["anchor_bottom"], &anchorBottom); err != nil {
+		t.Fatalf("decoding anchor_bottom: %v", err)
+	}
+
+	if err := json.Unmarshal(result.Properties["offset_left"], &offsetLeft); err != nil {
+		t.Fatalf("decoding offset_left: %v", err)
+	}
+
+	if err := json.Unmarshal(result.Properties["grow_vertical"], &growVertical); err != nil {
+		t.Fatalf("decoding grow_vertical: %v", err)
+	}
+
+	if anchorBottom != 1 || offsetLeft != 24 || growVertical != 2 {
+		t.Fatalf(
+			"expected anchors/grow values (1, 24, 2), got (%v, %v, %v)",
+			anchorBottom,
+			offsetLeft,
+			growVertical,
+		)
+	}
+
+	inspected, err := bridge.Call[node.InspectParams, node.InspectResult](
+		session.Client,
+		node.InspectName,
+		node.InspectParams{
+			Node:          "Box/Button",
+			Properties:    []string{"anchor_bottom", "grow_vertical", "offset_left"},
+			ExpectedScene: path,
+		},
+	)
+	if err != nil {
+		t.Fatalf("expected inspecting container layout properties to succeed: %v", err)
+	}
+
+	if len(inspected.Properties) != 3 {
+		t.Fatalf(
+			"expected three inspected layout properties, got %d",
+			len(inspected.Properties),
+		)
+	}
+
+	if err := session.LogJSON(node.SetName, result); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNodeSetControlReadOnlySizeStillRejected(t *testing.T) {
+	session := requireSuite(t)
+	path := "res://cases/node_set_control_layout/main.tscn"
+
+	openFixtureScene(t, session, path)
+
+	_, err := bridge.Call[node.SetParams, node.SetResult](
+		session.Client,
+		node.SetName,
+		node.SetParams{
+			Node:          "Box/Button",
+			ExpectedScene: path,
+			Properties: map[string]json.RawMessage{
+				"size": json.RawMessage(`{"x":10,"y":10}`),
+			},
+		},
+	)
+
+	assertAPIErrorCode(t, err, apierr.CodeFailedPrecondition)
+}
+
+func TestNodeSetPackedArraySucceeds(t *testing.T) {
+	session := requireSuite(t)
+	path := "res://cases/node_set_packed/main.tscn"
+
+	openFixtureScene(t, session, path)
+
+	result := setNodeProperties(
+		t,
+		session,
+		path,
+		"Line",
+		map[string]json.RawMessage{
+			"points": json.RawMessage(`[{"x":1,"y":2},{"x":3,"y":4}]`),
+		},
+	)
+
+	var points []struct {
+		X float64 `json:"x"`
+		Y float64 `json:"y"`
+	}
+
+	if err := json.Unmarshal(result.Properties["points"], &points); err != nil {
+		t.Fatalf("decoding points: %v", err)
+	}
+
+	if len(points) != 2 || points[0].X != 1 || points[1].Y != 4 {
+		t.Fatalf("expected points (1,2) and (3,4), got %+v", points)
+	}
+}
+
+func TestNodeSetPackedArrayInvalidShapeReportsExpectedShape(t *testing.T) {
+	session := requireSuite(t)
+	path := "res://cases/node_set_packed/main.tscn"
+
+	openFixtureScene(t, session, path)
+
+	_, err := bridge.Call[node.SetParams, node.SetResult](
+		session.Client,
+		node.SetName,
+		node.SetParams{
+			Node:          "Line",
+			ExpectedScene: path,
+			Properties: map[string]json.RawMessage{
+				"points": json.RawMessage(`[{"x":1}]`),
+			},
+		},
+	)
+
+	assertAPIErrorCode(t, err, apierr.CodeInvalidArgument)
+
+	if !strings.Contains(err.Error(), "PackedVector2Array") ||
+		!strings.Contains(err.Error(), `{"x","y"}`) ||
+		!strings.Contains(err.Error(), "index 0") {
+		t.Fatalf("expected packed shape error, got: %v", err)
+	}
+}
+
+func TestNodeSetObjectPropertyToNullSucceeds(t *testing.T) {
+	session := requireSuite(t)
+	path := "res://cases/node_set_null_object/main.tscn"
+
+	openFixtureScene(t, session, path)
+
+	result := setNodeProperties(
+		t,
+		session,
+		path,
+		"Sprite",
+		map[string]json.RawMessage{
+			"texture": json.RawMessage(`null`),
+		},
+	)
+
+	if string(result.Properties["texture"]) != "null" {
+		t.Fatalf(
+			"expected texture to serialize as null, got %s",
+			result.Properties["texture"],
+		)
+	}
+}
+
+func TestNodeSetSaveIncludesTypedSaveReport(t *testing.T) {
+	session := requireSuite(t)
+	path := "res://cases/node_set_save_report/main.tscn"
+
+	openFixtureScene(t, session, path)
+
+	result, err := bridge.Call[node.SetParams, node.SetResult](
+		session.Client,
+		node.SetName,
+		node.SetParams{
+			Node:          "Player",
+			ExpectedScene: path,
+			Save:          true,
+			Properties: map[string]json.RawMessage{
+				"position": json.RawMessage(`{"x":12,"y":34}`),
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("expected node.set with save to succeed: %v", err)
+	}
+
+	if !result.Saved {
+		t.Fatal("expected node.set to save the scene")
+	}
+
+	report := result.SaveReport
+
+	if report == nil {
+		t.Fatal("expected the save result to include save_report")
+	}
+
+	if report.Scene != path {
+		t.Fatalf("expected save report scene %s, got %s", path, report.Scene)
+	}
+
+	if report.Format != "tscn" {
+		t.Fatalf("expected tscn save report, got %s", report.Format)
+	}
+
+	if report.Scope != "entire_scene_file" {
+		t.Fatalf("expected entire_scene_file scope, got %s", report.Scope)
+	}
+
+	if !report.Available {
+		t.Fatal("expected the save report to be available")
+	}
+
+	if !report.Changed {
+		t.Fatal("expected the save report to record a changed file")
+	}
+}
+
 func instantiateNode(
 	t *testing.T,
 	session *harness.Session,

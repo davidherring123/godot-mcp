@@ -106,6 +106,11 @@ func save() -> Response:
             "Use the editor's Save As before saving this scene through godot-mcp"
         )
 
+    # Capture the on-disk file before and after the save so callers can see
+    # every change the save actually wrote, including unsaved edits that were
+    # not part of their request. This is diagnostic only and never blocks or
+    # repairs the save.
+    var before := SceneSaveDiagnostics.snapshot(path)
     var result := editor.save_scene()
 
     if result != OK:
@@ -117,6 +122,7 @@ func save() -> Response:
     return Response.success({
         "scene": path,
         "saved": true,
+        "save_report": SceneSaveDiagnostics.build(path, before),
     })
 
 func find_node(path: String) -> Node:

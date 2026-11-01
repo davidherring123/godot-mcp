@@ -12,15 +12,24 @@ import (
 
 	"github.com/davidherring123/godot-mcp/internal/compose"
 	"github.com/davidherring123/godot-mcp/internal/hostcmd"
+	productversion "github.com/davidherring123/godot-mcp/internal/version"
 )
 
 // VERSION is replaced with -ldflags "-X main.VERSION=..." in release builds.
-var VERSION = "dev"
+// It must stay uninitialized so the linker can stamp it; an unstamped build
+// resolves the embedded canonical version at startup instead.
+var VERSION string
 
 func main() {
 	compose.Install()
 
-	root := hostcmd.NewRootCommand(VERSION)
+	version, err := productversion.Normalize(VERSION)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Error:", err)
+		os.Exit(1)
+	}
+
+	root := hostcmd.NewRootCommand(version)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

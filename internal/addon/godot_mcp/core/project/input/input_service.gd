@@ -3,6 +3,15 @@ extends ActionService
 
 const PREFIX := "input/"
 
+const OPERATION_ALIASES := {
+    "input.add": "add",
+    "input.set": "set",
+    "input.rename": "rename",
+    "input.delete": "delete",
+    "input.event_add": "event_add",
+    "input.event_delete": "event_delete",
+}
+
 var defer_save := false
 var defer_reload := false
 
@@ -19,7 +28,15 @@ func get_actions() -> Dictionary:
         "input.map_apply": ActionHandler.new(apply, false, false, false),
     }
 
-func list_actions(_request: Request) -> Response:
+func list_actions(request: Request) -> Response:
+    var include_builtin = request.params.get("include_builtin", false)
+
+    if not (include_builtin is bool):
+        return Response.failure(
+            ErrorCode.INVALID_ARGUMENT,
+            "include_builtin must be a boolean"
+        )
+
     var actions: Array[Dictionary] = []
 
     for definition in ProjectSettings.get_property_list():
@@ -38,13 +55,21 @@ func list_actions(_request: Request) -> Response:
         if not value is Dictionary:
             continue
 
-        actions.append(_payload(name.substr(PREFIX.length()), value))
+        var action: String = name.substr(PREFIX.length())
+
+        if not include_builtin and _is_builtin_action(action):
+            continue
+
+        actions.append(_payload(action, value))
 
     actions.sort_custom(_sort_actions)
 
     return Response.success({"actions": actions})
 
 func inspect_action(request: Request) -> Response:
+    if request.params.has("actions"):
+        return _inspect_actions(request)
+
     var response := _action_name(request.params.get("action"))
 
     if not response.code.is_empty():
@@ -57,6 +82,42 @@ func inspect_action(request: Request) -> Response:
         return _not_found(action)
 
     return Response.success(_payload(action, value))
+
+func _inspect_actions(request: Request) -> Response:
+    if request.params.has("action"):
+        return Response.failure(
+            ErrorCode.INVALID_ARGUMENT,
+            "Provide action or actions, not both"
+        )
+
+    var names = request.params.get("actions")
+
+    if not (names is Array) or names.is_empty():
+        return Response.failure(
+            ErrorCode.INVALID_ARGUMENT,
+            "At least one action name is required"
+        )
+
+    if names.size() > 100:
+        return Response.failure(
+            ErrorCode.INVALID_ARGUMENT,
+            "At most 100 action names are allowed"
+        )
+
+    var results := {}
+
+    for value in names:
+        var response := _action_name(value)
+
+        if not response.code.is_empty():
+            return response
+
+        var name: String = response.result
+        var action := _read_action(name)
+
+        results[name] = null if action.is_empty() else _payload(name, action)
+
+    return Response.success({"actions": results})
 
 func add_action(request: Request) -> Response:
     var response := _action_name(request.params.get("action"))
@@ -401,11 +462,13 @@ func apply(request: Request) -> Response:
                 "no changes were saved"
             )
 
-        var kind := str(operation.get("operation", ""))
+        var kind := _canonical_operation(str(operation.get("operation", "")))
+        var canonical: Dictionary = operation.duplicate()
+        canonical["operation"] = kind
         var target := str(operation.get("action", ""))
         var field_error := validate_operation_fields(
             index,
-            operation,
+            canonical,
             allowed_fields
         )
 
@@ -414,7 +477,7 @@ func apply(request: Request) -> Response:
             _restore_actions(snapshot)
             return batch_operation_failure(
                 index,
-                operation,
+                canonical,
                 target,
                 field_error,
                 "no changes were saved"
@@ -424,17 +487,17 @@ func apply(request: Request) -> Response:
 
         match kind:
             "add":
-                response = add_action(Request.new("input.add", operation))
+                response = add_action(Request.new("input.add", canonical))
             "set":
-                response = set_action(Request.new("input.set", operation))
+                response = set_action(Request.new("input.set", canonical))
             "rename":
-                response = rename_action(Request.new("input.rename", operation))
+                response = rename_action(Request.new("input.rename", canonical))
             "delete":
-                response = delete_action(Request.new("input.delete", operation))
+                response = delete_action(Request.new("input.delete", canonical))
             "event_add":
-                response = add_event(Request.new("input.event_add", operation))
+                response = add_event(Request.new("input.event_add", canonical))
             "event_delete":
-                response = delete_event(Request.new("input.event_delete", operation))
+                response = delete_event(Request.new("input.event_delete", canonical))
             _:
                 response = Response.failure(
                     ErrorCode.INVALID_ARGUMENT,
@@ -446,13 +509,13 @@ func apply(request: Request) -> Response:
             _restore_actions(snapshot)
             return batch_operation_failure(
                 index,
-                operation,
+                canonical,
                 target,
                 response,
                 "no changes were saved"
             )
 
-        summaries.append(_apply_operation_summary(index, operation, response.result))
+        summaries.append(_apply_operation_summary(index, canonical, response.result))
 
     defer_save = false
     defer_reload = false
@@ -496,6 +559,9 @@ func apply(request: Request) -> Response:
     _reload_input_map()
 
     return Response.success(_apply_summary(summaries, false, true))
+
+func _canonical_operation(operation: String) -> String:
+    return OPERATION_ALIASES.get(operation, operation)
 
 func _end_batch() -> void:
     defer_save = false
@@ -546,6 +612,9 @@ func _apply_operation_summary(
     if kind == "event_add" or kind == "event_delete":
         summary["binding_index"] = int(result.get("index", 0))
 
+    if kind == "event_add" and result.has("event"):
+        summary["event"] = result["event"]
+
     return summary
 
 func _apply_summary(
@@ -581,7 +650,7 @@ func _snapshot_actions(operations: Array) -> Dictionary:
             var name: String = value
             _snapshot_action(snapshot, PREFIX + name)
 
-        if str(operation.get("operation", "")) == "rename":
+        if _canonical_operation(str(operation.get("operation", ""))) == "rename":
             var new_value = operation.get("new_name")
 
             if new_value is String and not new_value.is_empty():

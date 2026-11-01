@@ -1,0 +1,12 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://cases/editor_capture_3d/capture_content.gd" id="1_script"]
+
+[sub_resource type="BoxMesh" id="BoxMesh_1"]
+size = Vector3(1000, 1000, 1000)
+
+[node name="CaptureContent" type="Node3D"]
+script = ExtResource("1_script")
+
+[node name="Box" type="MeshInstance3D" parent="."]
+mesh = SubResource("BoxMesh_1")

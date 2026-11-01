@@ -113,7 +113,7 @@ func set_properties(request: Request) -> Response:
 
     var converted: Dictionary = decoded.converted
     var previous: Dictionary = decoded.previous
-    var names: Array = converted.keys()
+    var names: Array = PropertyCodec.property_order(converted)
 
     var changed := false
 
@@ -140,9 +140,17 @@ func set_properties(request: Request) -> Response:
         undo_redo.commit_action()
 
     var result := {}
+    var context := VariantSerializer.Context.new()
+    var requested: Array = values.keys()
 
-    for property_name in names:
-        result[property_name] = VariantSerializer.serialize(node.get(property_name))
+    requested.sort()
+
+    for property_path in requested:
+        result[property_path] = VariantSerializer.serialize(
+            PropertyCodec.read_property(node, str(property_path)),
+            {},
+            context
+        )
 
     return Response.success({
         "scene": root.scene_file_path,
@@ -245,7 +253,7 @@ func add(request: Request) -> Response:
     undo_redo.add_do_method(parent, "add_child", node, requested_name.is_empty())
     undo_redo.add_do_method(node, "set_owner", root)
 
-    for property_name in decoded.converted:
+    for property_name in PropertyCodec.property_order(decoded.converted):
         undo_redo.add_do_property(node, property_name, decoded.converted[property_name])
 
     undo_redo.add_do_reference(node)
@@ -253,9 +261,14 @@ func add(request: Request) -> Response:
     undo_redo.commit_action()
 
     var result := {}
+    var context := VariantSerializer.Context.new()
 
-    for property_name in values:
-        result[property_name] = VariantSerializer.serialize(node.get(property_name))
+    for property_path in values:
+        result[property_path] = VariantSerializer.serialize(
+            PropertyCodec.read_property(node, str(property_path)),
+            {},
+            context
+        )
 
     return Response.success({
         "scene": root.scene_file_path,
@@ -384,7 +397,7 @@ func instantiate_scene(request: Request) -> Response:
     undo_redo.add_do_method(parent, "add_child", instance, requested_name.is_empty())
     undo_redo.add_do_method(instance, "set_owner", root)
 
-    for property_name in decoded.converted:
+    for property_name in PropertyCodec.property_order(decoded.converted):
         undo_redo.add_do_property(instance, property_name, decoded.converted[property_name])
 
     undo_redo.add_do_reference(instance)
@@ -392,9 +405,14 @@ func instantiate_scene(request: Request) -> Response:
     undo_redo.commit_action()
 
     var result := {}
+    var context := VariantSerializer.Context.new()
 
-    for property_name in values:
-        result[property_name] = VariantSerializer.serialize(instance.get(property_name))
+    for property_path in values:
+        result[property_path] = VariantSerializer.serialize(
+            PropertyCodec.read_property(instance, str(property_path)),
+            {},
+            context
+        )
 
     return Response.success({
         "scene": root.scene_file_path,

@@ -9,6 +9,7 @@ import (
 	"io"
 
 	"github.com/davidherring123/godot-mcp/internal/core"
+	productversion "github.com/davidherring123/godot-mcp/internal/version"
 	mcpgo "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -69,7 +70,7 @@ func NewServer(options Options) (*mcpgo.Server, error) {
 
 	version := options.Version
 	if version == "" {
-		version = "dev"
+		version = productversion.Current()
 	}
 
 	instructions := options.Instructions

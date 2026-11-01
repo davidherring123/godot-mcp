@@ -1,0 +1,9 @@
+[gd_scene format=3]
+
+[node name="Main" type="Node3D"]
+
+[node name="Mesh" type="MeshInstance3D" parent="."]
+
+[node name="Shape" type="CollisionShape3D" parent="."]
+
+[node name="Sprite" type="Sprite2D" parent="."]

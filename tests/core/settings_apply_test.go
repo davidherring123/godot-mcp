@@ -97,6 +97,27 @@ func TestProjectSettingsApplyDryRunAndApply(t *testing.T) {
 	}
 }
 
+func TestProjectSettingsApplyQualifiedNames(t *testing.T) {
+	session := requireSuite(t)
+	before := readProjectFile(t, session)
+	result, err := settings.Apply(session.Root(), settings.ApplyParams{
+		DryRun: true,
+		Operations: []settings.ApplyOperation{
+			{Operation: "project.settings.set", Setting: viewportWidthSetting, Value: json.RawMessage(`1024`)},
+			{Operation: "project.settings.unset", Setting: viewportWidthSetting},
+		},
+	})
+	if err != nil {
+		t.Fatalf("qualified settings operations failed: %v", err)
+	}
+	if len(result.Operations) != 2 || result.Operations[0].Operation != "set" || result.Operations[1].Operation != "unset" {
+		t.Fatalf("unexpected qualified operation summaries: %+v", result)
+	}
+	if after := readProjectFile(t, session); after != before {
+		t.Fatal("qualified dry run changed project.godot")
+	}
+}
+
 func TestProjectSettingsApplyFailureRollsBackWithoutSaving(t *testing.T) {
 	session := requireSuite(t)
 

@@ -52,4 +52,5 @@ jobs:
         run: godot --version
 
       - name: Run core tests
+        timeout-minutes: 3
         run: make test TEST_ARGS='-v'

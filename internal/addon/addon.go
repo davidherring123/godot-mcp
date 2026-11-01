@@ -65,6 +65,10 @@ func Install(projectRoot string) error {
 			return os.MkdirAll(target, 0755)
 		}
 
+		if strings.HasSuffix(entry.Name(), ".uid") {
+			return nil
+		}
+
 		data, err := fs.ReadFile(source, path)
 		if err != nil {
 			return err

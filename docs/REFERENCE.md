@@ -137,7 +137,45 @@ inside that directory. Start defaults to a windowed session so screenshots work;
 `unsupported` error instead of a blank image. Stop is idempotent and refuses to
 kill an unresponsive process unless `force` is set.
 
+`runtime_wait` waits for idle or physics frames, elapsed seconds, or both; it
+does not pause the game between calls. `runtime_capture` accepts `wait_frames`,
+`wait_seconds`, and `basis` and captures after rendering. Waits are bounded to
+600 frames / 30 seconds, with a maximum request timeout of 60 seconds. A long
+request holds the MCP server's serialization lock until completion or timeout.
+Queue time counts toward the request deadline. The runner expires requests
+slightly before the host timeout to return failures and partial input counts;
+a fully stalled process may still reach the host timeout without a report.
+Capture fails if its post-render barrier receives no draw signal within five
+seconds. Sessions started by older hosts must be stopped and restarted to use
+wait, input, or capture waits.
+`runtime_logs` reads bounded stdout/stderr slices with byte cursors, including
+after exit. An incomplete UTF-8 character at the current end of a log is held
+until more bytes arrive; its cursor does not advance and `truncated` remains
+true. A cursor inside a character skips its remaining continuation bytes.
+Malformed bytes use JSON's replacement-character behavior.
+`runtime_status` reports observation time and heartbeat age so callers
+can distinguish cached frame counts from a fresh runtime observation.
+
+`runtime_input` sends short ordered sequences of action, key, mouse, scroll, or
+gesture events. Action press/release changes polling state; key/mouse/gesture
+events also use Godot's input-event route. Explicit press/release and frame
+spacing support holds and drags. A GUI click should start with mouse motion.
+The virtual cursor maintains synthetic viewport coordinates across calls; it
+does not capture the desktop pointer or prevent real input from interleaving.
+Direct `picks` results are diagnostic queries, not proof that gameplay handled
+an event. Verify the actual game response with captures, logs, or fixture checks.
+
 ## MCP tools
+
+`editor_capture` captures the editor's 2D or 3D viewport rather than the running
+game or the full editor UI. It requires a graphical editor.
+`filesystem_scan` waits for resource indexing and can verify existing path/UID
+mappings. Check `completed`, `timed_out`, and each path's `uid_valid`; scanning
+does not generate missing UIDs or guarantee every UID warning is repaired.
+Resource and scene creation also wait for bounded UID registration using the
+UID already written by Godot. Check `uid_registered`, or `index_pending` on a
+resource batch. If indexing times out, the file still exists: run
+`filesystem_scan` and retry the dependent operation instead of creating it again.
 
 Tool names use underscores: `editor_status`, `scene_list`, `scene_apply`,
 `node_add`, `resource_set`, `input_event_add`, `validate_scene`, `runtime_start`,
@@ -147,8 +185,29 @@ when the PNG fits the embedding limit; otherwise its structured result keeps the
 artifact path, dimensions, and byte size. Tool failures set `isError` and
 preserve the core error code (`invalid_argument`, `not_found`,
 `failed_precondition`, `unsupported`, and others) so the client can recover.
+Errors include `code` and `message` as structured fields, with JSON text retained
+for clients that only display text content. For tool discovery, use targeted
+searches or the installed skill's `references/actions.md` index before loading
+individual schemas.
 
 ### Scene editing
+
+`scene_reload` reloads the active saved scene from disk and clears its undo/redo
+history. It refuses unsaved changes unless `discard_unsaved: true` is explicit;
+use `expected_scene` to guard the target. Its `stale_scripts` list is a best-effort
+comparison of attached script sources, not a guarantee that every dependency
+cache has refreshed. Reloading does not remove already-saved overrides.
+
+`node_set` accepts nested indexed paths using Godot NodePath subname syntax,
+for example `position:x` or `material:shader_parameter/curvature`. The same
+property shapes work in `node_add`, `node_instantiate`, and `scene_apply`
+operations. Each segment resolves against the node, a resource, or a built-in
+vector-like value; unknown, read-only, or type-mismatched leaves fail without
+changing the scene. A nested write to a resource duplicates the resource root
+and intermediate resources first, so shared embedded and external resources are
+not mutated, and undo restores the original resource identity. Setting a
+property together with one of its nested paths in the same properties object is
+rejected as ambiguous; separate batch operations apply in order.
 
 `scene_apply` is the batch tool. It accepts 1–100 ordered `operations` of node
 mutations (`node.add`, `node.set`, `node.rename`, `node.duplicate`, `node.move`,
@@ -177,7 +236,42 @@ re-running the batch. The result names the exact operation index, `operation`,
 and id on failure. The granular node tools remain available and behave as
 before.
 
+Successful scene saves include `save_report`, a bounded before/after disk diff
+covering the whole scene file, including unrelated earlier unsaved edits.
+Inspect `available` and `diff_truncated`; a truncated report is not a complete
+change inventory. Binary `.scn` files report byte changes rather than a text diff.
+After changing exported script defaults, check for stale serialized overrides.
+The report diagnoses what was written; it does not determine whether an override
+was intentional or automatically revert it.
+
+`node_overrides` inventories a linked scene instance's overrides, separating
+live packed values, saved values, effective values, and source-scene baselines.
+Use its `properties` filter for focused output and check `truncated`. Child
+differences marked `inferred` are save candidates, not proof of explicit saved
+overrides. Inspection does not infer intent or automatically revert values.
+
 ### Resources, project settings, and Input Map
+
+`input_list` excludes built-in actions by default; set `include_builtin: true`
+for the complete list. `input_inspect` accepts either one `action` or an `actions`
+array; multi-name results map missing names to `null`. Input Map batch binding
+additions return the stored event, including its device. Omitted devices retain
+Godot's native defaults (Godot 4.7: keyboard `16`, mouse `32`, joypad `0`);
+explicit devices are preserved.
+
+Resource properties accept references such as `{"resource":"res://mesh.tres"}`
+or inline values such as `{"type":"BoxMesh","properties":{"size":{"x":1,"y":1,"z":1}}}`.
+Anonymous resources are inspected with bounded type/property graphs; repeated
+references and cycles have identity markers. Use `properties` filters on
+`node_inspect` and `resource_inspect` to keep output focused. Embedded resource
+addresses such as `res://scenes/main.tscn::ShaderMaterial_crt` are inspectable;
+the result distinguishes active-scene values from disk-loaded values. File
+mutation tools still require standalone `.tres` or `.res` paths.
+
+Batch tools accept qualified action names consistently: `node.set`,
+`resource.set`, `project.settings.set`, and `input.event_add`. Resource,
+project-setting, and Input Map batches retain their existing short aliases and
+return short operation names in summaries.
 
 For ordered multi-step edits within one domain, use `resource_apply`,
 `project_settings_apply`, and `input_map_apply` (the underlying action names are
@@ -194,6 +288,47 @@ Rollback is best-effort: if it fails, the error code is `internal_error` because
 the editor may be partially changed. `resource_apply` tracks references
 introduced earlier in a batch conservatively, so removing a reference earlier in
 the same batch can still block a later delete.
+
+Wherever a node or resource property accepts a `{"resource": "res://..."}`
+reference, it also accepts an inline anonymous resource such as
+`{"type": "BoxMesh", "properties": {"size": {"x": 1, "y": 1, "z": 1}}}`.
+Inline values are created through the same resource factory as `resource_create`,
+checked against the target property's resource-type hint, and saved as embedded
+subresources rather than extra `.tres` files. Custom Resource scripts run their
+constructors and setters while inline values are decoded, including during
+validation and `dry_run`.
+Property edits cannot reassign `resource_path`; use resource actions to manage
+file paths.
+
+Typed Resource arrays support whole-array replacement with saved references,
+inline resources, and `null` elements. For example, an `Array[Mesh]` accepts
+`[{"resource":"res://meshes/shared.tres"},{"type":"BoxMesh"},null]`.
+An empty array clears the contents while preserving its declared element type.
+Each element must match the native or custom Resource class declared by the
+property; incompatible elements reject the whole edit before assignment.
+Custom script types and inherited Resource types are supported. Top-level
+`null` does not clear an array; use `[]`. Nested arrays are not decoded.
+
+Inspection returns saved references in the existing
+`{"resource": "res://...", "type": "..."}` shape. Anonymous resources return a
+bounded `type`/`properties` graph with identity `id` values; repeated references
+use `ref`, and cyclic references use `ref` plus `cycle: true` instead of
+recursing forever. Use the `properties` name filter on `node_inspect` or
+`resource_inspect` to avoid dumping a large embedded graph.
+Graphs containing `truncated`, `ref`, or `cycle` markers are inspection-only:
+writes reject them rather than reconstructing missing data as defaults. Complete
+inline graphs may retain their `id` annotation. Saved references accept the
+inspection `type` annotation as advisory.
+
+`resource_inspect` also accepts read-only embedded addresses such as
+`res://scenes/main.tscn::BoxMesh_abc`. Its `source` reports `disk` for resource
+files and saved embedded values, or `live` when the named value is resolved from
+the open editor scene; `unsaved_changes` indicates whether that scene has
+unsaved edits. Embedded addresses are not accepted by `resource_create`,
+`resource_set`, or `resource_delete`. `resource_apply` operation names accept
+either the short `create`/`set`/`delete` names or the qualified
+`resource.create`/`resource.set`/`resource.delete` aliases, and summaries always
+use the short names.
 
 A resource `dry_run` can still instantiate resources and run custom Resource
 scripts and property setters in memory, so scripts with external side effects

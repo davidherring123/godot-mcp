@@ -37,6 +37,7 @@ func TestInputMapApplyDryRunAndApplyOrdered(t *testing.T) {
 			Event: &input.Event{
 				Type:            input.EventTypeKey,
 				PhysicalKeycode: intPtr(32),
+				Device:          intPtr(2),
 			},
 		},
 		{
@@ -68,6 +69,8 @@ func TestInputMapApplyDryRunAndApplyOrdered(t *testing.T) {
 		"renamed",
 	})
 
+	assertSavedBinding(t, dryRun.Operations[1].Event, 32, 2)
+
 	assertInputMissing(t, session, name)
 	assertInputMissing(t, session, renamed)
 
@@ -96,6 +99,130 @@ func TestInputMapApplyDryRunAndApplyOrdered(t *testing.T) {
 		*inspected.Events[0].PhysicalKeycode != 32 {
 		t.Fatalf("unexpected binding: %+v", inspected.Events[0])
 	}
+
+	if inspected.Events[0].Device == nil || *inspected.Events[0].Device != 2 {
+		t.Fatalf("expected device 2, got %+v", inspected.Events[0].Device)
+	}
+
+	assertSavedBinding(t, applied.Operations[1].Event, 32, 2)
+}
+
+func assertSavedBinding(
+	t *testing.T,
+	event *input.Event,
+	physicalKeycode int,
+	device int,
+) {
+	t.Helper()
+
+	if event == nil {
+		t.Fatal("expected event_add to summarize the saved binding")
+	}
+
+	if event.Type != input.EventTypeKey {
+		t.Fatalf("expected a key binding, got %s", event.Type)
+	}
+
+	if event.PhysicalKeycode == nil || *event.PhysicalKeycode != physicalKeycode {
+		t.Fatalf("expected physical keycode %d, got %+v", physicalKeycode, event.PhysicalKeycode)
+	}
+
+	if event.Device == nil || *event.Device != device {
+		t.Fatalf("expected device %d, got %+v", device, event.Device)
+	}
+}
+
+func TestInputMapApplyAcceptsQualifiedOperationAliases(t *testing.T) {
+	session := requireSuite(t)
+	name := "cli_test_batch_alias"
+	renamed := "cli_test_batch_alias_renamed"
+
+	deleteAction(t, session, name)
+	deleteAction(t, session, renamed)
+	t.Cleanup(func() {
+		deleteAction(t, session, name)
+		deleteAction(t, session, renamed)
+	})
+
+	result, err := input.Apply(session.Root(), input.ApplyParams{
+		Operations: []input.ApplyOperation{
+			{
+				Operation: "input.add",
+				Action:    name,
+				Deadzone:  floatPtr(0.2),
+			},
+			{
+				Operation: "input.event_add",
+				Action:    name,
+				Event: &input.Event{
+					Type:            input.EventTypeKey,
+					PhysicalKeycode: intPtr(32),
+				},
+			},
+			{
+				Operation: "input.set",
+				Action:    name,
+				Deadzone:  floatPtr(0.4),
+			},
+			{
+				Operation: "input.rename",
+				Action:    name,
+				NewName:   renamed,
+			},
+			{
+				Operation: "input.event_delete",
+				Action:    renamed,
+				Index:     intPtr(0),
+			},
+			{
+				Operation: "input.delete",
+				Action:    renamed,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected qualified operation aliases to succeed: %v", err)
+	}
+
+	if !result.Applied || result.Changed != 6 {
+		t.Fatalf("unexpected alias batch summary: %+v", result)
+	}
+
+	assertOperationStatuses(t, result.Operations, []string{
+		"added",
+		"binding_added",
+		"updated",
+		"renamed",
+		"binding_deleted",
+		"deleted",
+	})
+
+	canonical := []string{
+		"add",
+		"event_add",
+		"set",
+		"rename",
+		"event_delete",
+		"delete",
+	}
+
+	for index, operation := range result.Operations {
+		if operation.Operation != canonical[index] {
+			t.Fatalf(
+				"operation %d name = %s; want canonical %s",
+				index,
+				operation.Operation,
+				canonical[index],
+			)
+		}
+	}
+
+	if result.Operations[1].Event == nil {
+		t.Fatal("expected the alias event_add summary to include its saved event")
+	}
+
+	assertInputMissing(t, session, name)
+	assertInputMissing(t, session, renamed)
 }
 
 func TestInputMapApplyEventDeleteAndDelete(t *testing.T) {
@@ -278,6 +405,15 @@ func TestInputMapApplyRejectsFieldsFromOtherOperations(t *testing.T) {
 			field: "new_name",
 		},
 		{
+			name: "input.add with new_name",
+			operation: input.ApplyOperation{
+				Operation: "input.add",
+				Action:    "jump",
+				NewName:   "leap",
+			},
+			field: "new_name",
+		},
+		{
 			name: "set with event",
 			operation: input.ApplyOperation{
 				Operation: "set",
@@ -357,27 +493,31 @@ func TestInputMapApplyRejectsFieldsFromOtherOperations(t *testing.T) {
 func TestInputMapApplyAddonRejectsExclusiveFields(t *testing.T) {
 	session := requireSuite(t)
 
-	_, err := bridge.Call[input.ApplyParams, input.ApplyResult](
-		session.Client,
-		input.ApplyName,
-		input.ApplyParams{
-			Operations: []input.ApplyOperation{
-				{
-					Operation: "add",
-					Action:    "cli_test_batch_addon_fields",
-					NewName:   "leap",
+	for _, operation := range []string{"add", "input.add"} {
+		t.Run(operation, func(t *testing.T) {
+			_, err := bridge.Call[input.ApplyParams, input.ApplyResult](
+				session.Client,
+				input.ApplyName,
+				input.ApplyParams{
+					Operations: []input.ApplyOperation{
+						{
+							Operation: operation,
+							Action:    "cli_test_batch_addon_fields",
+							NewName:   "leap",
+						},
+					},
 				},
-			},
-		},
-	)
+			)
 
-	assertAPIErrorCode(t, err, apierr.CodeInvalidArgument)
+			assertAPIErrorCode(t, err, apierr.CodeInvalidArgument)
 
-	var apiError *apierr.Error
+			var apiError *apierr.Error
 
-	if !errors.As(err, &apiError) ||
-		!strings.Contains(apiError.Message, "does not accept new_name") {
-		t.Fatalf("expected an addon field exclusivity error, got %v", err)
+			if !errors.As(err, &apiError) ||
+				!strings.Contains(apiError.Message, "does not accept new_name") {
+				t.Fatalf("expected an addon field exclusivity error, got %v", err)
+			}
+		})
 	}
 }
 

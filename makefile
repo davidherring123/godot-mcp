@@ -4,7 +4,7 @@ BIN_DIR := ./bin
 DIST_DIR := ./dist
 INSTALL_DIR := $(HOME)/.local/bin
 
-VERSION ?= dev
+# Omit VERSION to use the canonical product version from the packager.
 
 TEST_PACKAGES ?= ./internal/... ./tests/...
 TEST_ARGS ?=
@@ -40,7 +40,7 @@ endif
 	go build -o "$(BIN_DIR)/$(BINARY)" $(CMD)
 
 release-addon:
-	go run ./cmd/package-addon --version "$(VERSION)" --out "$(DIST_DIR)"
+	go run ./cmd/package-addon $(if $(strip $(VERSION)),--version "$(VERSION)") --out "$(DIST_DIR)"
 
 install:
 	go install $(CMD)
@@ -66,7 +66,7 @@ lint:
 	golangci-lint run ./...
 
 test:
-	go test -count=1 $(TEST_ARGS) $(TEST_PACKAGES)
+	go test -timeout=2m -count=1 $(TEST_ARGS) $(TEST_PACKAGES)
 
 check: format-check vet lint
 

@@ -1,0 +1,2 @@
+# Go formatting requires LF regardless of the contributor's checkout settings.
+*.go text eol=lf

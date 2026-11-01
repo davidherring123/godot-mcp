@@ -2,7 +2,6 @@ package runtime
 
 import (
 	"bytes"
-	"fmt"
 	"image/png"
 	"os"
 	"path/filepath"
@@ -11,15 +10,51 @@ import (
 	"github.com/davidherring123/godot-mcp/internal/protocol/apierr"
 )
 
-const capturePoll = 25 * time.Millisecond
+type captureRequest struct {
+	Op              string  `json:"op"`
+	Path            string  `json:"path"`
+	Basis           string  `json:"basis"`
+	Frames          int     `json:"frames,omitempty"`
+	Seconds         float64 `json:"seconds,omitempty"`
+	ExpiresAtUnixMS int64   `json:"expires_at_unix_ms,omitempty"`
+}
 
 // Capture asks the running game to save a screenshot and returns it as a
 // project-scoped artifact. The PNG bytes are attached to the MCP result when
-// they fit the embedding limit.
+// they fit the embedding limit. Optional frame or time waits share the runtime's
+// wait path; the runner always captures after the frame post-draw barrier.
 func Capture(projectRoot string, params CaptureParams) (CaptureResult, error) {
+	basis, err := normalizeWaitBasis(params.Basis)
+	if err != nil {
+		return CaptureResult{}, err
+	}
+
+	if err := validateWaitRanges(params.WaitFrames, params.WaitSeconds); err != nil {
+		return CaptureResult{}, err
+	}
+
+	timeout, err := resolveWaitTimeout(
+		params.TimeoutSeconds,
+		captureWaitBase,
+		params.WaitFrames,
+		params.WaitSeconds,
+	)
+	if err != nil {
+		return CaptureResult{}, err
+	}
+
 	info, err := requireRunningSession(projectRoot, params.Session)
 	if err != nil {
 		return CaptureResult{}, err
+	}
+
+	// A plain capture is understood by older runners. Waiting before the
+	// capture needs the runner's deadline protocol, because an abandoned wait
+	// would otherwise hold the session's single active request open.
+	if params.WaitFrames != 0 || params.WaitSeconds != 0 || basis != basisIdle {
+		if err := requireRunnerProtocol(info, "capture waits"); err != nil {
+			return CaptureResult{}, err
+		}
 	}
 
 	if info.metadata.Headless {
@@ -30,7 +65,11 @@ func Capture(projectRoot string, params CaptureParams) (CaptureResult, error) {
 		)
 	}
 
-	identifier := fmt.Sprintf("%d-%s", time.Now().UnixNano(), randomHex(3))
+	// The runner owns the expiry; the host stops at the same submission plus
+	// the requested timeout. If the runner cannot reach a post-render frame it
+	// now fails on this deadline instead of holding the queue forever.
+	deadline := newRunnerDeadline(time.Now(), timeout)
+	identifier := newRunnerRequestID()
 	relative := filepath.ToSlash(filepath.Join(
 		runtimeDirName,
 		sessionsDirName,
@@ -40,85 +79,55 @@ func Capture(projectRoot string, params CaptureParams) (CaptureResult, error) {
 	))
 	output := "res://" + relative
 	absoluteOutput := filepath.Join(projectRoot, filepath.FromSlash(relative))
-	requestPath := filepath.Join(info.directory, "requests", identifier+".json")
-	responsePath := filepath.Join(info.directory, "responses", identifier+".json")
 
 	// Send res:// rather than an absolute path so Godot resolves the project
 	// root consistently even when the host path contains symbolic links.
-	if err := writeJSONAtomic(requestPath, map[string]string{"path": output}); err != nil {
-		return CaptureResult{}, newError(
-			string(apierr.CodeInternalError),
-			"writing capture request: %v",
-			err,
-		)
+	if _, err := submitRunnerRequestWithID(
+		info,
+		identifier,
+		captureRequest{
+			Op:              "capture",
+			Path:            output,
+			Basis:           basis,
+			Frames:          params.WaitFrames,
+			Seconds:         params.WaitSeconds,
+			ExpiresAtUnixMS: deadline.expiresAtUnixMS(),
+		},
+		"capture",
+	); err != nil {
+		return CaptureResult{}, err
 	}
 
-	timeout := captureTimeout
-
-	if params.TimeoutSeconds > 0 {
-		timeout = time.Duration(params.TimeoutSeconds * float64(time.Second))
-	}
-
-	return waitForCapture(projectRoot, info, absoluteOutput, responsePath, timeout)
+	return waitForCapture(projectRoot, info, absoluteOutput, identifier, deadline)
 }
 
 func waitForCapture(
 	projectRoot string,
 	info *sessionInfo,
 	absoluteOutput string,
-	responsePath string,
-	timeout time.Duration,
+	identifier string,
+	deadline runnerDeadline,
 ) (CaptureResult, error) {
-	deadline := time.NewTimer(timeout)
-	defer deadline.Stop()
-
-	ticker := time.NewTicker(capturePoll)
-	defer ticker.Stop()
-
-	for {
-		var response captureResponse
-
-		found, err := readJSON(responsePath, &response)
-		if err != nil {
-			return CaptureResult{}, newError(
-				string(apierr.CodeInternalError),
-				"reading capture response: %v",
-				err,
-			)
-		}
-
-		if found {
-			if !response.OK {
-				return CaptureResult{}, captureError(response)
-			}
-
-			return captureResult(
-				projectRoot,
-				info.metadata.Session,
-				absoluteOutput,
-				response,
-			)
-		}
-
-		if !sameProcess(info.metadata.PID, info.metadata.ProcessIdentity) {
-			return CaptureResult{}, newError(
-				string(apierr.CodeFailedPrecondition),
-				"runtime session %s exited before the screenshot completed; call runtime.status for errors",
-				info.metadata.Session,
-			)
-		}
-
-		select {
-		case <-deadline.C:
-			return CaptureResult{}, newError(
-				string(apierr.CodeActionFailed),
-				"timed out after %s waiting for a screenshot from session %s; the runtime may be stalled",
-				timeout,
-				info.metadata.Session,
-			)
-		case <-ticker.C:
-		}
+	response, err := awaitRunnerDeadline[captureResponse](
+		deadline,
+		info,
+		identifier,
+		"screenshot",
+	)
+	if err != nil {
+		return CaptureResult{}, err
 	}
+
+	if !response.OK {
+		return CaptureResult{}, captureError(response)
+	}
+
+	return captureResult(
+		projectRoot,
+		info.metadata.Session,
+		absoluteOutput,
+		response,
+	)
 }
 
 func captureError(response captureResponse) error {
@@ -171,15 +180,17 @@ func captureResult(
 	}
 
 	result := CaptureResult{
-		Session:    session,
-		Artifact:   artifactPath,
-		MIMEType:   "image/png",
-		Width:      config.Width,
-		Height:     config.Height,
-		Bytes:      int64(len(data)),
-		Frame:      response.Frame,
-		CapturedAt: time.Now().UTC().Format(time.RFC3339),
-		Embedded:   len(data) <= maxEmbeddedImage,
+		Session:      session,
+		Artifact:     artifactPath,
+		MIMEType:     "image/png",
+		Width:        config.Width,
+		Height:       config.Height,
+		Bytes:        int64(len(data)),
+		Frame:        response.Frame,
+		CapturedAt:   time.Now().UTC().Format(time.RFC3339),
+		Embedded:     len(data) <= maxEmbeddedImage,
+		WaitedFrames: response.WaitedFrames,
+		WaitedMS:     response.WaitedMS,
 	}
 
 	if result.Embedded {

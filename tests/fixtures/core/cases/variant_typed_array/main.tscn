@@ -1,0 +1,8 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://cases/variant_typed_array/typed_holder.gd" id="1_holder"]
+
+[node name="Main" type="Node"]
+
+[node name="Holder" type="Node" parent="."]
+script = ExtResource("1_holder")

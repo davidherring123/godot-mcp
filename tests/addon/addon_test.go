@@ -1,15 +1,36 @@
 package addon_test
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/davidherring123/godot-mcp/internal/addon"
+	productversion "github.com/davidherring123/godot-mcp/internal/version"
 )
 
 const pluginPath = "res://addons/godot_mcp/plugin.cfg"
+
+func TestInstallDoesNotShipUIDSidecars(t *testing.T) {
+	root := t.TempDir()
+	if err := addon.Install(root); err != nil {
+		t.Fatal(err)
+	}
+	err := filepath.WalkDir(addon.Path(root), func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !entry.IsDir() && strings.HasSuffix(path, ".uid") {
+			t.Errorf("installed generated UID sidecar: %s", path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestInstallRemovesObsoleteManagedPaths(t *testing.T) {
 	root := writeProject(t, "[application]\n\nconfig/name=\"Test\"\n")
@@ -75,10 +96,24 @@ func TestInstallIncludesMCPPanel(t *testing.T) {
 		"add_control_to_bottom_panel(mcp_panel, \"Godot MCP\")",
 		"mcp_backend.poll(delta)",
 		"OS.get_executable_path()",
+		"\"version\": _read_plugin_version()",
 	} {
 		if !strings.Contains(string(plugin), expected) {
 			t.Fatalf("installed plugin is missing %q:\n%s", expected, plugin)
 		}
+	}
+
+	if strings.Contains(string(plugin), "\"version\": \"dev\"") {
+		t.Fatalf("installed plugin still registers a development version:\n%s", plugin)
+	}
+
+	config, err := os.ReadFile(filepath.Join(addon.Path(root), "plugin.cfg"))
+	if err != nil {
+		t.Fatalf("reading installed plugin.cfg: %v", err)
+	}
+
+	if !strings.Contains(string(config), `version="`+productversion.Current()+`"`) {
+		t.Fatalf("installed plugin.cfg does not carry the canonical version %q:\n%s", productversion.Current(), config)
 	}
 }
 

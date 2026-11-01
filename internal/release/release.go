@@ -16,6 +16,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	productversion "github.com/davidherring123/godot-mcp/internal/version"
 )
 
 const (
@@ -87,7 +89,8 @@ type Options struct {
 	Root string
 	// OutputDir receives the archives and SHA256SUMS. It defaults to <Root>/dist.
 	OutputDir string
-	// Version is embedded in the host binaries and used in archive names.
+	// Version is embedded in the host binaries and used in archive names. It
+	// defaults to the canonical product version; a legacy "v" prefix is removed.
 	Version string
 	// Targets defaults to DefaultTargets.
 	Targets []Target
@@ -105,7 +108,7 @@ func Build(options Options) ([]string, error) {
 		return nil, err
 	}
 
-	version, err := normalizeVersion(options.Version)
+	releaseVersion, err := productversion.Normalize(options.Version)
 	if err != nil {
 		return nil, err
 	}
@@ -125,7 +128,7 @@ func Build(options Options) ([]string, error) {
 		return nil, err
 	}
 
-	addonEntries, err = withAddonVersion(addonEntries, version)
+	addonEntries, err = withAddonVersion(addonEntries, releaseVersion)
 	if err != nil {
 		return nil, err
 	}
@@ -148,7 +151,7 @@ func Build(options Options) ([]string, error) {
 	for _, target := range targets {
 		output := filepath.Join(scratch, target.String(), target.HostBinaryName())
 
-		if err := buildHost(goCommand, root, version, target, output); err != nil {
+		if err := buildHost(goCommand, root, releaseVersion, target, output); err != nil {
 			return nil, err
 		}
 
@@ -161,7 +164,7 @@ func Build(options Options) ([]string, error) {
 		entries := append([]ArchiveEntry(nil), addonEntries...)
 		entries = append(entries, hostEntry(target, binaries[target.String()]))
 
-		archive := filepath.Join(outputDir, targetArchiveName(version, target))
+		archive := filepath.Join(outputDir, targetArchiveName(releaseVersion, target))
 		if err := writeArchive(archive, target.OS == "windows", entries, options.SourceDateEpoch); err != nil {
 			return nil, err
 		}
@@ -174,7 +177,7 @@ func Build(options Options) ([]string, error) {
 		universalEntries = append(universalEntries, hostEntry(target, binaries[target.String()]))
 	}
 
-	universal := filepath.Join(outputDir, universalArchiveName(version))
+	universal := filepath.Join(outputDir, universalArchiveName(releaseVersion))
 	if err := writeArchive(universal, true, universalEntries, options.SourceDateEpoch); err != nil {
 		return nil, err
 	}
@@ -227,6 +230,11 @@ func AddonEntries(addonDir string) ([]ArchiveEntry, error) {
 
 		switch entry.Name() {
 		case ".DS_Store", "Thumbs.db", ".godot-mcp-managed":
+			return nil
+		}
+
+		// Script UID sidecars belong to the destination project's import.
+		if strings.HasSuffix(entry.Name(), ".uid") {
 			return nil
 		}
 
@@ -334,29 +342,6 @@ func outputDirectory(root, output string) (string, error) {
 	}
 
 	return absolute, nil
-}
-
-func normalizeVersion(version string) (string, error) {
-	version = strings.TrimSpace(version)
-	if version == "" {
-		version = "dev"
-	}
-
-	for _, character := range version {
-		alphaNumeric := character >= 'a' && character <= 'z' ||
-			character >= 'A' && character <= 'Z' ||
-			character >= '0' && character <= '9'
-		if alphaNumeric || strings.ContainsRune("._+-", character) {
-			continue
-		}
-
-		return "", fmt.Errorf(
-			"invalid version %q: use letters, digits, '.', '-', '_' or '+'",
-			version,
-		)
-	}
-
-	return version, nil
 }
 
 func buildHost(goCommand, root, version string, target Target, output string) error {

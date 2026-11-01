@@ -26,6 +26,8 @@ Read `ARCHITECTURE.md` before modifying code under `internal/`, including the em
 
 - Run `make check` for formatting, vetting, and static analysis.
 - Run `make test` for behavioral verification. Tests requiring Godot may be skipped when the executable is unavailable.
+- Keep test execution bounded: `make test` uses a 2-minute Go timeout per package. For direct `go test` calls, pass `-timeout=2m` or a shorter limit appropriate to the scope. Use a 3-minute outer command timeout for the normal full suite; individual Godot subprocesses should have short operation-specific deadlines.
+- Never disable test timeouts or raise them to 10–15 minutes to make a hung test finish. Investigate loops, blocked subprocesses, and cleanup first. Any increase beyond these defaults requires explicit user approval and measured evidence explaining why it is needed. These rules apply to delegated agents and their tool calls as well as checked-in tests.
 - Add or update relevant tests and fixtures when changing behavior.
 - Keep tests under `tests/`; do not add tests for benchmark-only code.
 - Do not suppress lint rules or weaken tests merely to make checks pass.

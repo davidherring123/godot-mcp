@@ -9,10 +9,11 @@ import (
 	"time"
 
 	"github.com/davidherring123/godot-mcp/internal/release"
+	productversion "github.com/davidherring123/godot-mcp/internal/version"
 )
 
 func main() {
-	version := flag.String("version", "dev", "version embedded in binaries and archive names")
+	version := flag.String("version", productversion.Current(), "version embedded in binaries and archive names")
 	root := flag.String("root", ".", "repository root")
 	output := flag.String("out", "", "output directory for archives; defaults to <root>/dist")
 	flag.Parse()

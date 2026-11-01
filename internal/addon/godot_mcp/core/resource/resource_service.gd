@@ -1,7 +1,14 @@
 class_name ResourceService
 extends ActionService
 
+const OPERATION_ALIASES := {
+    "resource.create": "create",
+    "resource.set": "set",
+    "resource.delete": "delete",
+}
+
 var editor: EditorInterface
+var filesystem_index: FileSystemIndex
 var dry_run := false
 var batch_active := false
 var batch_resources: Dictionary = {}
@@ -11,6 +18,7 @@ var batch_paths: Dictionary = {}
 
 func _init(editor_interface: EditorInterface) -> void:
     editor = editor_interface
+    filesystem_index = FileSystemIndex.new(editor_interface)
 
 func get_actions() -> Dictionary:
     return {
@@ -51,7 +59,7 @@ func create(request: Request) -> Response:
             "A file already exists at: %s" % path
         )
 
-    var resource := _instantiate(resource_type)
+    var resource := ResourceFactory.instantiate(resource_type)
 
     if resource == null:
         return Response.failure(
@@ -83,33 +91,28 @@ func create(request: Request) -> Response:
 
     _remember_created_resource(path, resource, values)
 
-    return Response.success({
+    var registration := {}
+
+    if not batch_active:
+        registration = await _register_paths([path])
+
+    var result := {
         "resource": path,
         "type": _type_name(resource),
         "properties": _serialize_properties(resource, values),
-    })
+    }
+
+    return Response.success(_with_registration(result, registration))
 
 func inspect(request: Request) -> Response:
-    var path_response := _validated_path(request.params.get("resource"))
+    var address_response := _validated_read_address(
+        request.params.get("resource")
+    )
 
-    if not path_response.code.is_empty():
-        return path_response
+    if not address_response.code.is_empty():
+        return address_response
 
-    var path: String = path_response.result
-
-    if not FileAccess.file_exists(path):
-        return Response.failure(
-            ErrorCode.NOT_FOUND,
-            "Resource not found: %s" % path
-        )
-
-    var resource := _load(path)
-
-    if resource == null:
-        return Response.failure(
-            ErrorCode.ACTION_FAILED,
-            "Could not load resource: %s" % path
-        )
+    var address: String = address_response.result
 
     var requested = request.params.get("properties", [])
 
@@ -130,10 +133,19 @@ func inspect(request: Request) -> Response:
 
         filters[property_name] = false
 
+    var resolved := _read_resource(address)
+
+    if resolved.has("error"):
+        return resolved["error"]
+
+    var resource: Resource = resolved["resource"]
     var result := {
-        "resource": path,
+        "resource": address,
         "type": _type_name(resource),
         "properties": PropertyCodec.collect_properties(resource, filters),
+        "source": resolved["source"],
+        "embedded": address.contains("::"),
+        "unsaved_changes": resolved["unsaved"],
     }
 
     for property_name in filters:
@@ -144,6 +156,215 @@ func inspect(request: Request) -> Response:
             )
 
     return Response.success(result)
+
+func _read_resource(address: String) -> Dictionary:
+    var separator := address.find("::")
+
+    if separator < 0:
+        if not FileAccess.file_exists(address):
+            return _read_failure(ErrorCode.NOT_FOUND, address)
+
+        var resource := _load(address)
+
+        if resource == null:
+            return _read_failure(ErrorCode.ACTION_FAILED, address)
+
+        return {
+            "resource": resource,
+            "source": "disk",
+            "unsaved": false,
+        }
+
+    var base := address.substr(0, separator)
+    var edited := _edited_scene_root_for(base)
+
+    if edited != null:
+        var live := _find_resource_in_node(edited, address)
+
+        if live != null:
+            return {
+                "resource": live,
+                "source": "live",
+                "unsaved": _scene_is_unsaved(base),
+            }
+
+    if not FileAccess.file_exists(base):
+        return _read_failure(ErrorCode.NOT_FOUND, address)
+
+    var embedded := _load_embedded(base, address)
+
+    if embedded == null:
+        return _read_failure(ErrorCode.NOT_FOUND, address)
+
+    return {
+        "resource": embedded,
+        "source": "disk",
+        "unsaved": _scene_is_unsaved(base),
+    }
+
+func _read_failure(code: String, address: String) -> Dictionary:
+    var message := "Resource not found: %s" % address
+
+    if code != ErrorCode.NOT_FOUND:
+        message = "Could not load resource: %s" % address
+
+    return {
+        "error": Response.failure(code, message)
+    }
+
+func _load_embedded(base: String, address: String) -> Resource:
+    var base_resource := _load(base)
+
+    if base_resource == null:
+        return null
+
+    var cached := ResourceLoader.get_cached_ref(address)
+
+    if cached is Resource:
+        return cached
+
+    if base_resource is PackedScene:
+        var found := _find_resource_in_scene_state(
+            (base_resource as PackedScene).get_state(),
+            address
+        )
+
+        if found != null:
+            return found
+
+    return _find_resource_in_value(base_resource, address, {}, 0)
+
+func _find_resource_in_scene_state(
+    state: SceneState,
+    address: String
+) -> Resource:
+    var seen := {}
+
+    for node_index in state.get_node_count():
+        for property_index in state.get_node_property_count(node_index):
+            var found := _find_resource_in_value(
+                state.get_node_property_value(node_index, property_index),
+                address,
+                seen,
+                0
+            )
+
+            if found != null:
+                return found
+
+    return null
+
+func _find_resource_in_node(root: Node, address: String) -> Resource:
+    return _find_resource_in_value(root, address, {}, 0)
+
+func _find_resource_in_value(
+    value: Variant,
+    address: String,
+    seen: Dictionary,
+    depth: int
+) -> Resource:
+    if depth > 32:
+        return null
+
+    if value is Resource:
+        var resource: Resource = value
+
+        if str(resource.resource_path) == address:
+            return resource
+
+        var instance_id := resource.get_instance_id()
+
+        if seen.has(instance_id):
+            return null
+
+        seen[instance_id] = true
+
+        for property in resource.get_property_list():
+            if int(property.get("usage", 0)) & PROPERTY_USAGE_STORAGE == 0:
+                continue
+
+            var found := _find_resource_in_value(
+                resource.get(property.name),
+                address,
+                seen,
+                depth + 1
+            )
+
+            if found != null:
+                return found
+
+        return null
+
+    if value is Node:
+        var node: Node = value
+
+        for property in node.get_property_list():
+            if int(property.get("usage", 0)) & PROPERTY_USAGE_STORAGE == 0:
+                continue
+
+            var found := _find_resource_in_value(
+                node.get(property.name),
+                address,
+                seen,
+                depth + 1
+            )
+
+            if found != null:
+                return found
+
+        for child in node.get_children():
+            var found := _find_resource_in_value(
+                child,
+                address,
+                seen,
+                depth + 1
+            )
+
+            if found != null:
+                return found
+
+        return null
+
+    if value is Array:
+        for item in value:
+            var found := _find_resource_in_value(item, address, seen, depth + 1)
+
+            if found != null:
+                return found
+
+        return null
+
+    if value is Dictionary:
+        for key in value:
+            var found := _find_resource_in_value(
+                value[key],
+                address,
+                seen,
+                depth + 1
+            )
+
+            if found != null:
+                return found
+
+    return null
+
+func _edited_scene_root_for(base: String) -> Node:
+    var root := editor.get_edited_scene_root()
+
+    if root == null:
+        return null
+
+    if str(root.scene_file_path).simplify_path() != base:
+        return null
+
+    return root
+
+func _scene_is_unsaved(base: String) -> bool:
+    for path in editor.get_unsaved_scenes():
+        if str(path).simplify_path() == base:
+            return true
+
+    return false
 
 func set_properties(request: Request) -> Response:
     var path_response := _validated_path(request.params.get("resource"))
@@ -186,9 +407,10 @@ func set_properties(request: Request) -> Response:
 
     var converted: Dictionary = decoded.converted
     var previous: Dictionary = decoded.previous
-    var names: Array = converted.keys()
+    var names: Array = PropertyCodec.property_order(converted)
 
     var changed := false
+    var registration := {}
 
     for property_name in names:
         if converted[property_name] != previous[property_name]:
@@ -212,6 +434,9 @@ func set_properties(request: Request) -> Response:
 
                 return save_error
 
+            if not batch_active:
+                registration = await _register_paths([path])
+
         if batch_active:
             _remember_set_references(path, converted)
 
@@ -220,19 +445,24 @@ func set_properties(request: Request) -> Response:
         batch_paths[resource.get_instance_id()] = path
 
     var result := {}
+    var context := VariantSerializer.Context.new()
 
-    for property_name in names:
-        result[property_name] = VariantSerializer.serialize(
-            resource.get(property_name),
-            batch_paths
+    # Report the requested keys, including nested indexed paths such as
+    # albedo_color:g, rather than the root properties the codec collapses
+    # them into.
+    for property_path in values:
+        result[property_path] = VariantSerializer.serialize(
+            PropertyCodec.read_property(resource, str(property_path)),
+            batch_paths,
+            context
         )
 
-    return Response.success({
+    return Response.success(_with_registration({
         "resource": path,
         "type": _type_name(resource),
         "properties": result,
         "changed": changed,
-    })
+    }, registration))
 
 func delete(request: Request) -> Response:
     var path_response := _validated_path(request.params.get("resource"))
@@ -301,7 +531,7 @@ func apply(request: Request) -> Response:
             "dry_run must be a boolean"
         )
 
-    var preview := _run_operations(operations, true)
+    var preview := await _run_operations(operations, true)
 
     if not preview.code.is_empty():
         return preview
@@ -310,7 +540,7 @@ func apply(request: Request) -> Response:
         return Response.success(_apply_summary(preview.result, true, false))
 
     var snapshot := _snapshot_resources(operations)
-    var applied := _run_operations(operations, false)
+    var applied := await _run_operations(operations, false)
 
     if not applied.code.is_empty():
         var rollback_error := _restore_resources(snapshot)
@@ -326,7 +556,13 @@ func apply(request: Request) -> Response:
             "%s; rollback failed: %s" % [applied.message, rollback_error]
         )
 
-    return Response.success(_apply_summary(applied.result, false, true))
+    # One bounded registration pass for the whole batch instead of a wait per
+    # operation. Files are already written, so a timeout is reported as pending
+    # rather than failing or encouraging a duplicate create.
+    var summaries: Array = applied.result
+    var registration := await _register_written(summaries)
+
+    return Response.success(_apply_summary(summaries, false, true, registration))
 
 func _run_operations(operations: Array, preview: bool) -> Response:
     _reset_batch_state()
@@ -352,27 +588,31 @@ func _run_operations(operations: Array, preview: bool) -> Response:
             _reset_batch_state()
             return batch_operation_failure(index, operation, "", invalid)
 
-        var kind := str(operation.get("operation", ""))
+        var kind := _canonical_operation(str(operation.get("operation", "")))
+        var canonical: Dictionary = operation.duplicate()
+        canonical["operation"] = kind
         var target := str(operation.get("resource", ""))
         var field_error := validate_operation_fields(
             index,
-            operation,
+            canonical,
             allowed_fields
         )
 
         if field_error != null:
             _reset_batch_state()
-            return batch_operation_failure(index, operation, target, field_error)
+            return batch_operation_failure(index, canonical, target, field_error)
 
         var response: Response
 
         match kind:
             "create":
-                response = create(Request.new("resource.create", operation))
+                response = await create(Request.new("resource.create", canonical))
             "set":
-                response = set_properties(Request.new("resource.set", operation))
+                response = await set_properties(
+                    Request.new("resource.set", canonical)
+                )
             "delete":
-                response = delete(Request.new("resource.delete", operation))
+                response = delete(Request.new("resource.delete", canonical))
             _:
                 response = Response.failure(
                     ErrorCode.INVALID_ARGUMENT,
@@ -381,13 +621,16 @@ func _run_operations(operations: Array, preview: bool) -> Response:
 
         if not response.code.is_empty():
             _reset_batch_state()
-            return batch_operation_failure(index, operation, target, response)
+            return batch_operation_failure(index, canonical, target, response)
 
-        summaries.append(_operation_summary(index, operation, response.result))
+        summaries.append(_operation_summary(index, canonical, response.result))
 
     _reset_batch_state()
 
     return Response.success(summaries)
+
+func _canonical_operation(operation: String) -> String:
+    return OPERATION_ALIASES.get(operation, operation)
 
 func _operation_summary(
     index: int,
@@ -421,15 +664,56 @@ func _operation_summary(
 func _apply_summary(
     results: Array,
     preview: bool,
-    applied: bool
+    applied: bool,
+    registration: Dictionary = {}
 ) -> Dictionary:
     var changed := 0
 
     for result in results:
-        if bool(result.get("changed", false)):
+        if result is Dictionary and bool(result.get("changed", false)):
             changed += 1
 
-    return {
+    var state := _write_state(results)
+    var final_status: Dictionary = state["final_status"]
+    var written: Dictionary = state["written"]
+    var pending_paths := {}
+
+    for result in results:
+        if preview or not result is Dictionary:
+            continue
+
+        var path := str(result.get("resource", ""))
+        var status := str(result.get("status", ""))
+
+        # A path that a later operation deleted has no current UID state,
+        # even if an earlier operation in the same batch wrote it.
+        if str(final_status.get(path, "")) == "deleted" or status == "deleted":
+            continue
+
+        if not written.has(path):
+            continue
+
+        # Unchanged operations did not write the file, so they carry no UID
+        # annotation even when another operation in the batch wrote the same
+        # path.
+        if status != "created" and not bool(result.get("changed", false)):
+            continue
+
+        if not registration.has(path):
+            continue
+
+        var registered := bool(registration[path])
+        var uid := filesystem_index.uid_text(path)
+
+        if not uid.is_empty():
+            result["uid"] = uid
+
+        result["uid_registered"] = registered
+
+        if not registered:
+            pending_paths[path] = true
+
+    var summary := {
         "dry_run": preview,
         "applied": applied,
         "operation_count": results.size(),
@@ -437,6 +721,96 @@ func _apply_summary(
         "unchanged": results.size() - changed,
         "operations": results,
     }
+
+    if not pending_paths.is_empty():
+        summary["index_pending"] = true
+        summary["note"] = FileSystemIndex.BATCH_PENDING_NOTE
+
+    return summary
+
+# Aggregates batch write state per path instead of trusting the last operation:
+# a no-op set after a create leaves the file written, and a delete clears the
+# path so a later recreate is registered again.
+func _write_state(results: Array) -> Dictionary:
+    var order: Array[String] = []
+    var final_status := {}
+    var written := {}
+
+    for result in results:
+        if not result is Dictionary:
+            continue
+
+        var path := str(result.get("resource", ""))
+
+        if not final_status.has(path):
+            order.append(path)
+
+        var status := str(result.get("status", ""))
+
+        final_status[path] = status
+
+        if status == "deleted":
+            written.erase(path)
+        elif status == "created" or bool(result.get("changed", false)):
+            written[path] = true
+
+    return {
+        "order": order,
+        "final_status": final_status,
+        "written": written,
+    }
+
+func _register_paths(paths: Array) -> Dictionary:
+    if paths.is_empty():
+        return {}
+
+    var deadline := filesystem_index.deadline_after(
+        FileSystemIndex.DEFAULT_TIMEOUT_SECONDS
+    )
+
+    return await filesystem_index.ensure_registered_paths(paths, deadline)
+
+func _register_written(summaries: Array) -> Dictionary:
+    var state := _write_state(summaries)
+    var order: Array = state["order"]
+    var final_status: Dictionary = state["final_status"]
+    var written: Dictionary = state["written"]
+    var paths: Array[String] = []
+
+    for value in order:
+        var path := str(value)
+
+        if not path.begins_with("res://"):
+            continue
+
+        # A path left deleted has nothing to register. Every surviving path
+        # that any operation wrote needs one registration pass even when the
+        # last operation on it changed nothing (for example a no-op set after
+        # a create).
+        if final_status[path] == "deleted" or not written.has(path):
+            continue
+
+        paths.append(path)
+
+    return await _register_paths(paths)
+
+func _with_registration(
+    result: Dictionary,
+    registration: Dictionary
+) -> Dictionary:
+    if registration.is_empty():
+        return result
+
+    var path := str(result.get("resource", ""))
+    var info := filesystem_index.registration(
+        path,
+        bool(registration.get(path, false))
+    )
+
+    for key in info:
+        result[key] = info[key]
+
+    return result
 
 func _snapshot_resources(operations: Array) -> Dictionary:
     var snapshot := {}
@@ -450,7 +824,11 @@ func _snapshot_resources(operations: Array) -> Dictionary:
         if not value is String or not value.begins_with("res://"):
             continue
 
-        var path: String = value.simplify_path()
+        var path := _contained_path(str(value))
+
+        # Rollback must never write through an escaping res://.. path either.
+        if path.is_empty():
+            continue
 
         if snapshot.has(path):
             continue
@@ -524,11 +902,13 @@ func _resource_for_operation(path: String) -> Resource:
 
 func _serialize_properties(resource: Resource, values: Dictionary) -> Dictionary:
     var serialized := {}
+    var context := VariantSerializer.Context.new()
 
-    for property_name in values:
-        serialized[property_name] = VariantSerializer.serialize(
-            resource.get(property_name),
-            batch_paths
+    for property_path in values:
+        serialized[property_path] = VariantSerializer.serialize(
+            PropertyCodec.read_property(resource, str(property_path)),
+            batch_paths,
+            context
         )
 
     return serialized
@@ -664,6 +1044,59 @@ func _referencing_paths_for_delete(path: String) -> Array[String]:
 
     return sorted
 
+func _validated_read_address(value: Variant) -> Response:
+    if not value is String or not value.begins_with("res://"):
+        return Response.failure(
+            ErrorCode.INVALID_ARGUMENT,
+            "A res:// resource path is required"
+        )
+
+    var separator: int = value.find("::")
+
+    if separator < 0:
+        var path := _contained_path(str(value))
+
+        if path.is_empty():
+            return Response.failure(
+                ErrorCode.INVALID_ARGUMENT,
+                "Resource must be inside the project"
+            )
+
+        var extension := path.get_extension().to_lower()
+
+        if extension != "tres" and extension != "res":
+            return Response.failure(
+                ErrorCode.INVALID_ARGUMENT,
+                "Resource path must end with .tres or .res: %s" % path
+            )
+
+        return Response.success(path)
+
+    var base := _contained_path(str(value.substr(0, separator)))
+    var embedded_name: String = value.substr(separator + 2)
+
+    if base.is_empty():
+        return Response.failure(
+            ErrorCode.INVALID_ARGUMENT,
+            "Resource must be inside the project"
+        )
+
+    if embedded_name.is_empty() or embedded_name.contains("::"):
+        return Response.failure(
+            ErrorCode.INVALID_ARGUMENT,
+            "An embedded resource requires a nonempty name after ::"
+        )
+
+    var extension := base.get_extension().to_lower()
+
+    if not ["tres", "res", "tscn", "scn"].has(extension):
+        return Response.failure(
+            ErrorCode.INVALID_ARGUMENT,
+            "Embedded resources must come from a .tres, .res, .tscn, or .scn file: %s" % base
+        )
+
+    return Response.success("%s::%s" % [base, embedded_name])
+
 func _validated_path(value: Variant) -> Response:
     if not value is String or not value.begins_with("res://"):
         return Response.failure(
@@ -671,9 +1104,9 @@ func _validated_path(value: Variant) -> Response:
             "A res:// resource path is required"
         )
 
-    var path: String = value.simplify_path()
+    var path := _contained_path(str(value))
 
-    if not path.begins_with("res://"):
+    if path.is_empty():
         return Response.failure(
             ErrorCode.INVALID_ARGUMENT,
             "Resource must be inside the project"
@@ -689,46 +1122,19 @@ func _validated_path(value: Variant) -> Response:
 
     return Response.success(path)
 
-func _instantiate(resource_type: String) -> Resource:
-    if ClassDB.class_exists(resource_type):
-        if not ClassDB.can_instantiate(resource_type):
-            return null
+# Godot maps res:// onto the project directory, but FileAccess, DirAccess, and
+# ResourceSaver follow ".." segments outside it. Canonicalize through Godot's
+# own project mapping and reject anything that no longer maps back to a res://
+# path. Embedded "::" subresource names are not filesystem paths, so callers
+# pass only the base path here.
+func _contained_path(path: String) -> String:
+    var absolute := ProjectSettings.globalize_path(path).simplify_path()
+    var localized := ProjectSettings.localize_path(absolute)
 
-        var instance = ClassDB.instantiate(resource_type)
+    if not localized.begins_with("res://"):
+        return ""
 
-        if instance is Resource:
-            return instance
-
-        _free_instance(instance)
-
-        return null
-
-    for entry in ProjectSettings.get_global_class_list():
-        if str(entry.get("class", "")) != resource_type:
-            continue
-
-        if bool(entry.get("is_abstract", false)):
-            return null
-
-        var script: Script = load(entry.get("path", ""))
-
-        if script == null:
-            return null
-
-        var instance = script.new()
-
-        if instance is Resource:
-            return instance
-
-        _free_instance(instance)
-
-        return null
-
-    return null
-
-func _free_instance(instance: Variant) -> void:
-    if instance is Node:
-        instance.free()
+    return localized
 
 func _load(path: String) -> Resource:
     if not ResourceLoader.exists(path):
@@ -840,14 +1246,4 @@ func _dependency_path(dependency: String) -> String:
     return ""
 
 func _type_name(resource: Resource) -> String:
-    var script: Script = resource.get_script()
-
-    while script != null:
-        var global_name := str(script.get_global_name())
-
-        if not global_name.is_empty():
-            return global_name
-
-        script = script.get_base_script()
-
-    return resource.get_class()
+    return ResourceFactory.type_name(resource)

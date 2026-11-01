@@ -7,9 +7,12 @@ var scene_context: EditorSceneContext
 var scene_service: SceneService
 var scene_apply_service: SceneApplyService
 var node_service: NodeService
+var node_override_service: NodeOverrideService
 var resource_service: ResourceService
 var settings_service: ProjectSettingsService
 var input_service: InputService
+var filesystem_service: FileSystemService
+var editor_capture_service: EditorCaptureService
 var busy := false
 
 func _init(editor_interface: EditorInterface, undo_redo: EditorUndoRedoManager) -> void:
@@ -18,16 +21,22 @@ func _init(editor_interface: EditorInterface, undo_redo: EditorUndoRedoManager) 
     scene_service = SceneService.new(scene_context)
     scene_apply_service = SceneApplyService.new(scene_context, undo_redo)
     node_service = NodeService.new(scene_context, undo_redo)
+    node_override_service = NodeOverrideService.new(scene_context)
     resource_service = ResourceService.new(editor_interface)
     settings_service = ProjectSettingsService.new()
     input_service = InputService.new()
+    filesystem_service = FileSystemService.new(editor_interface)
+    editor_capture_service = EditorCaptureService.new(editor_interface)
 
     _register_service(scene_service)
     _register_service(scene_apply_service)
     _register_service(node_service)
+    _register_service(node_override_service)
     _register_service(resource_service)
     _register_service(settings_service)
     _register_service(input_service)
+    _register_service(filesystem_service)
+    _register_service(editor_capture_service)
 
 func _register_service(service: ActionService) -> void:
     var service_actions := service.get_actions()
@@ -125,5 +134,12 @@ func _run_post_effects(
         )
 
     response.result["saved"] = true
+
+    # Additive diagnostic metadata: the action's own result shape is unchanged.
+    if (
+        save_response.result is Dictionary
+        and save_response.result.has("save_report")
+    ):
+        response.result["save_report"] = save_response.result["save_report"]
 
     return response

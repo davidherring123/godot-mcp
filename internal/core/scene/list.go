@@ -8,7 +8,7 @@ import (
 
 const ListName = "scene.list"
 
-func List(projectRoot string, _ ListParams) (ListResult, error) {
+func List(projectRoot string, params ListParams) (ListResult, error) {
 	scenes := []string{}
 
 	err := filepath.WalkDir(
@@ -27,6 +27,9 @@ func List(projectRoot string, _ ListParams) (ListResult, error) {
 			}
 
 			if entry.IsDir() {
+				if path != projectRoot && !params.IncludeAddons && (entry.Name() == "addons" || entry.Name() == ".addons") {
+					return filepath.SkipDir
+				}
 				return nil
 			}
 

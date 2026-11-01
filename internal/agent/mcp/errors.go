@@ -47,7 +47,8 @@ func errorResult(err error) *mcpgo.CallToolResult {
 	data, _ := json.Marshal(payload)
 
 	return &mcpgo.CallToolResult{
-		IsError: true,
-		Content: []mcpgo.Content{&mcpgo.TextContent{Text: string(data)}},
+		IsError:           true,
+		Content:           []mcpgo.Content{&mcpgo.TextContent{Text: string(data)}},
+		StructuredContent: payload,
 	}
 }

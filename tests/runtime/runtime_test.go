@@ -475,6 +475,7 @@ type runtimeFixture struct {
 	Scene           string    `json:"scene"`
 	Headless        bool      `json:"headless"`
 	StartedAt       time.Time `json:"started_at"`
+	RunnerProtocol  int       `json:"runner_protocol,omitempty"`
 }
 
 type runtimeExitFixture struct {

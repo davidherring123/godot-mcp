@@ -9,34 +9,60 @@ import (
 	"github.com/davidherring123/godot-mcp/tests/harness"
 )
 
-func TestInputListSucceeds(t *testing.T) {
+func TestInputListFiltersBuiltinActionsByDefault(t *testing.T) {
 	session := requireSuite(t)
+	name := "cli_test_list_custom"
 
-	result := listInputActions(t, session)
+	deleteAction(t, session, name)
+	t.Cleanup(func() { deleteAction(t, session, name) })
 
-	if len(result.Actions) == 0 {
-		t.Fatal("expected built-in actions")
+	addInputAction(t, session, name, nil)
+
+	custom := listInputActions(t, session, input.ListParams{})
+
+	if !hasInputAction(custom, name) {
+		t.Fatalf("expected the default list to include %s", name)
 	}
 
-	found := false
-
-	for _, action := range result.Actions {
-		if action.Name == "ui_accept" {
-			found = true
-
-			if len(action.Events) == 0 {
-				t.Fatal("expected ui_accept to have bindings")
-			}
-		}
+	if hasInputAction(custom, "ui_accept") {
+		t.Fatal("expected the default list to exclude built-in actions")
 	}
+
+	withBuiltin := listInputActions(t, session, input.ListParams{IncludeBuiltin: true})
+
+	if !hasInputAction(withBuiltin, name) {
+		t.Fatalf("expected the built-in list to include %s", name)
+	}
+
+	builtin, found := findInputAction(withBuiltin, "ui_accept")
 
 	if !found {
-		t.Fatal("expected input list to include ui_accept")
+		t.Fatal("expected include_builtin to include ui_accept")
 	}
 
-	if err := session.LogJSON(input.ListName, result); err != nil {
+	if len(builtin.Events) == 0 {
+		t.Fatal("expected ui_accept to have bindings")
+	}
+
+	if err := session.LogJSON(input.ListName, withBuiltin); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestInputListRejectsNonBooleanIncludeBuiltin(t *testing.T) {
+	session := requireSuite(t)
+
+	type rawListParams struct {
+		IncludeBuiltin any `json:"include_builtin"`
+	}
+
+	_, err := bridge.Call[rawListParams, input.ListResult](
+		session.Client,
+		input.ListName,
+		rawListParams{IncludeBuiltin: "yes"},
+	)
+
+	assertAPIErrorCode(t, err, apierr.CodeInvalidArgument)
 }
 
 func TestInputAddInspectDeleteRoundTrip(t *testing.T) {
@@ -301,6 +327,54 @@ func TestInputEventAddJoypadMotionSucceeds(t *testing.T) {
 	}
 }
 
+func TestInputEventAddUsesNativeDeviceDefaultsAndPreservesExplicitDevice(t *testing.T) {
+	session := requireSuite(t)
+	name := "cli_test_event_device"
+
+	deleteAction(t, session, name)
+	t.Cleanup(func() { deleteAction(t, session, name) })
+
+	addInputAction(t, session, name, nil)
+
+	addInputEvent(t, session, name, input.Event{
+		Type:            input.EventTypeKey,
+		PhysicalKeycode: intPtr(32),
+	})
+	addInputEvent(t, session, name, input.Event{
+		Type:            input.EventTypeKey,
+		PhysicalKeycode: intPtr(33),
+		Device:          intPtr(3),
+	})
+	addInputEvent(t, session, name, input.Event{
+		Type:        input.EventTypeMouseButton,
+		ButtonIndex: intPtr(1),
+	})
+
+	inspected := inspectInputAction(t, session, name)
+
+	if len(inspected.Events) != 3 {
+		t.Fatalf("expected three bindings, got %d", len(inspected.Events))
+	}
+
+	keyDefault := inspected.Events[0]
+
+	if keyDefault.Device == nil || *keyDefault.Device != 16 {
+		t.Fatalf("expected the native key device 16, got %+v", keyDefault.Device)
+	}
+
+	keyExplicit := inspected.Events[1]
+
+	if keyExplicit.Device == nil || *keyExplicit.Device != 3 {
+		t.Fatalf("expected the explicit device 3, got %+v", keyExplicit.Device)
+	}
+
+	mouseDefault := inspected.Events[2]
+
+	if mouseDefault.Device == nil || *mouseDefault.Device != 32 {
+		t.Fatalf("expected the native mouse device 32, got %+v", mouseDefault.Device)
+	}
+}
+
 func TestInputEventAddUnsupportedRejected(t *testing.T) {
 	session := requireSuite(t)
 	name := "cli_test_event_bad"
@@ -422,19 +496,100 @@ func TestInputInspectMissingReturnsNotFound(t *testing.T) {
 	assertAPIErrorCode(t, err, apierr.CodeNotFound)
 }
 
-func listInputActions(t *testing.T, session *harness.Session) input.ListResult {
+func TestInputInspectMultipleReturnsNullForMissing(t *testing.T) {
+	session := requireSuite(t)
+	name := "cli_test_inspect_many"
+	missing := "cli_test_inspect_many_missing"
+
+	deleteAction(t, session, name)
+	t.Cleanup(func() { deleteAction(t, session, name) })
+
+	addInputAction(t, session, name, floatPtr(0.3))
+
+	result, err := input.Inspect(session.Root(), input.InspectParams{
+		Actions: []string{name, missing},
+	})
+	if err != nil {
+		t.Fatalf("expected input.inspect multi lookup to succeed: %v", err)
+	}
+
+	if len(result.Actions) != 2 {
+		t.Fatalf("expected two per-name results, got %d", len(result.Actions))
+	}
+
+	found, ok := result.Actions[name]
+
+	if !ok || found == nil {
+		t.Fatalf("expected %s in the multi lookup, got %+v", name, result.Actions)
+	}
+
+	if found.Name != name || found.Deadzone != 0.3 {
+		t.Fatalf("unexpected action payload: %+v", found)
+	}
+
+	notFound, ok := result.Actions[missing]
+
+	if !ok {
+		t.Fatalf("expected a null result for %s, got %+v", missing, result.Actions)
+	}
+
+	if notFound != nil {
+		t.Fatalf("expected a null result for %s, got %+v", missing, notFound)
+	}
+
+	single := inspectInputAction(t, session, name)
+
+	if single.Name != name || single.Deadzone != 0.3 {
+		t.Fatalf("single-action lookup changed shape: %+v", single)
+	}
+}
+
+func TestInputInspectRejectsActionWithActions(t *testing.T) {
+	_, err := input.Inspect("", input.InspectParams{
+		Action:  "jump",
+		Actions: []string{"jump"},
+	})
+
+	assertAPIErrorCode(t, err, apierr.CodeInvalidArgument)
+
+	_, err = input.Inspect("", input.InspectParams{Actions: []string{}})
+
+	assertAPIErrorCode(t, err, apierr.CodeInvalidArgument)
+}
+
+func listInputActions(
+	t *testing.T,
+	session *harness.Session,
+	params input.ListParams,
+) input.ListResult {
 	t.Helper()
 
 	result, err := bridge.Call[input.ListParams, input.ListResult](
 		session.Client,
 		input.ListName,
-		input.ListParams{},
+		params,
 	)
 	if err != nil {
 		t.Fatalf("expected input.list to succeed: %v", err)
 	}
 
 	return result
+}
+
+func hasInputAction(result input.ListResult, name string) bool {
+	_, found := findInputAction(result, name)
+
+	return found
+}
+
+func findInputAction(result input.ListResult, name string) (input.Action, bool) {
+	for _, action := range result.Actions {
+		if action.Name == name {
+			return action, true
+		}
+	}
+
+	return input.Action{}, false
 }
 
 func addInputAction(

@@ -7,10 +7,11 @@ import (
 
 	"github.com/davidherring123/godot-mcp/internal/agent/skill"
 	"github.com/davidherring123/godot-mcp/internal/core"
+	productversion "github.com/davidherring123/godot-mcp/internal/version"
 )
 
 func TestGenerateReferencesEveryCoreAction(t *testing.T) {
-	files, err := skill.Generate("v1.2.3")
+	files, err := skill.Generate("1.2.3")
 	if err != nil {
 		t.Fatalf("generating references: %v", err)
 	}
@@ -21,8 +22,8 @@ func TestGenerateReferencesEveryCoreAction(t *testing.T) {
 		t.Fatalf("parsing actions.json: %v", err)
 	}
 
-	if reference.Version != "v1.2.3" {
-		t.Fatalf("reference version = %q, want v1.2.3", reference.Version)
+	if reference.Version != "1.2.3" {
+		t.Fatalf("reference version = %q, want 1.2.3", reference.Version)
 	}
 
 	if len(reference.Actions) != len(core.All()) {
@@ -53,5 +54,26 @@ func TestGenerateReferencesEveryCoreAction(t *testing.T) {
 		if !strings.Contains(markdown, "`"+action.Name+"`") {
 			t.Errorf("actions.md does not document %s", action.Name)
 		}
+	}
+}
+
+func TestGenerateUsesCanonicalVersionFallback(t *testing.T) {
+	files, err := skill.Generate("")
+	if err != nil {
+		t.Fatalf("generating references: %v", err)
+	}
+
+	var reference skill.Reference
+
+	if err := json.Unmarshal(files["references/actions.json"], &reference); err != nil {
+		t.Fatalf("parsing actions.json: %v", err)
+	}
+
+	if reference.Version != productversion.Current() {
+		t.Fatalf("reference version = %q, want %q", reference.Version, productversion.Current())
+	}
+
+	if !strings.Contains(string(files["references/actions.md"]), productversion.Current()) {
+		t.Fatalf("actions.md does not contain the canonical version %q", productversion.Current())
 	}
 }

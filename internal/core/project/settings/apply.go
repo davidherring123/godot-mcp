@@ -33,7 +33,7 @@ func validateApply(params ApplyParams) error {
 		target := operation.Setting
 
 		switch operation.Operation {
-		case "set":
+		case "set", "project.settings.set":
 			if operation.Setting == "" {
 				return batch.InvalidOperation(
 					index,
@@ -51,7 +51,7 @@ func validateApply(params ApplyParams) error {
 					"A value is required",
 				)
 			}
-		case "unset":
+		case "unset", "project.settings.unset":
 			if operation.Setting == "" {
 				return batch.InvalidOperation(
 					index,

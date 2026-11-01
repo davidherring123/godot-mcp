@@ -331,6 +331,9 @@ func TestResourceSetSucceeds(t *testing.T) {
 	}
 
 	text := readResourceFile(t, session, path)
+	if result.UIDRegistered == nil || !*result.UIDRegistered || result.UID == "" {
+		t.Fatalf("resource.set lost UID registration metadata: %+v", result)
+	}
 
 	for _, expected := range []string{
 		"albedo_color = Color(0, 0, 1, 1)",
@@ -551,6 +554,126 @@ func TestResourceDeleteMissingReturnsNotFound(t *testing.T) {
 	)
 
 	assertAPIErrorCode(t, err, apierr.CodeNotFound)
+}
+
+func TestResourceCreateShaderMaterialWithParametersSucceeds(t *testing.T) {
+	session := requireSuite(t)
+	path := "res://cases/resource_create_shader_material/material.tres"
+
+	result := createResource(t, session, resource.CreateParams{
+		Resource: path,
+		Type:     "ShaderMaterial",
+		Properties: map[string]json.RawMessage{
+			"shader":                     json.RawMessage(`{"resource":"res://assets/curvature.gdshader"}`),
+			"shader_parameter/curvature": json.RawMessage(`0.75`),
+		},
+	})
+
+	if result.Type != "ShaderMaterial" {
+		t.Fatalf("expected type ShaderMaterial, got %s", result.Type)
+	}
+
+	var curvature float64
+
+	if err := json.Unmarshal(
+		result.Properties["shader_parameter/curvature"],
+		&curvature,
+	); err != nil {
+		t.Fatalf("decoding shader_parameter/curvature: %v", err)
+	}
+
+	if curvature != 0.75 {
+		t.Fatalf("expected curvature 0.75, got %v", curvature)
+	}
+
+	text := readResourceFile(t, session, path)
+
+	for _, expected := range []string{
+		`[gd_resource type="ShaderMaterial"`,
+		"res://assets/curvature.gdshader",
+		"shader_parameter/curvature = 0.75",
+	} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf(
+				"expected the saved resource to contain %q:\n%s",
+				expected,
+				text,
+			)
+		}
+	}
+}
+
+func TestResourceCreateShaderMaterialInvalidParameterIsAtomic(t *testing.T) {
+	session := requireSuite(t)
+	path := "res://cases/resource_create_shader_invalid/material.tres"
+
+	_, err := bridge.Call[resource.CreateParams, resource.CreateResult](
+		session.Client,
+		resource.CreateName,
+		resource.CreateParams{
+			Resource: path,
+			Type:     "ShaderMaterial",
+			Properties: map[string]json.RawMessage{
+				"shader":                     json.RawMessage(`{"resource":"res://assets/curvature.gdshader"}`),
+				"shader_parameter/curvature": json.RawMessage(`"not a number"`),
+			},
+		},
+	)
+
+	assertAPIErrorCode(t, err, apierr.CodeInvalidArgument)
+
+	if _, statErr := os.Stat(resourceFilesystemPath(session, path)); !errors.Is(
+		statErr,
+		os.ErrNotExist,
+	) {
+		t.Fatalf("expected no file after failed create, stat returned: %v", statErr)
+	}
+}
+
+func TestResourceSetShaderMaterialWithParametersSucceeds(t *testing.T) {
+	session := requireSuite(t)
+	path := "res://cases/resource_set_shader_material/material.tres"
+
+	result := setResourceProperties(t, session, path, map[string]json.RawMessage{
+		"shader":                     json.RawMessage(`{"resource":"res://assets/curvature.gdshader"}`),
+		"shader_parameter/curvature": json.RawMessage(`0.8`),
+	})
+
+	if result.Type != "ShaderMaterial" {
+		t.Fatalf("expected type ShaderMaterial, got %s", result.Type)
+	}
+
+	if !result.Changed {
+		t.Fatal("expected resource.set to report a change")
+	}
+
+	var curvature float64
+
+	if err := json.Unmarshal(
+		result.Properties["shader_parameter/curvature"],
+		&curvature,
+	); err != nil {
+		t.Fatalf("decoding shader_parameter/curvature: %v", err)
+	}
+
+	if curvature != 0.8 {
+		t.Fatalf("expected curvature 0.8, got %v", curvature)
+	}
+
+	text := readResourceFile(t, session, path)
+
+	for _, expected := range []string{
+		"res://assets/curvature.gdshader",
+		"shader_parameter/curvature = 0.8",
+	} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf(
+				"expected the saved resource to contain %q:\n%s",
+				expected,
+				text,
+			)
+		}
+	}
 }
 
 func createResource(

@@ -25,7 +25,7 @@ func TestServerExposesEditorActions(t *testing.T) {
 	server, err := mcp.NewServer(mcp.Options{
 		Version:     "test",
 		ProjectRoot: root,
-		Actions:     []core.ActionDefinition{core.EditorStatus, core.ValidateScene},
+		Actions:     []core.ActionDefinition{core.EditorStatus, core.EditorCapture, core.FileSystemScan, core.ValidateScene},
 	})
 	if err != nil {
 		t.Fatalf("creating MCP server: %v", err)
@@ -66,7 +66,7 @@ func TestServerExposesEditorActions(t *testing.T) {
 		found[tool.Name] = true
 	}
 
-	for _, name := range []string{"editor_status", "validate_scene"} {
+	for _, name := range []string{"editor_status", "editor_capture", "filesystem_scan", "validate_scene"} {
 		if !found[name] {
 			t.Errorf("tool %q is not exposed", name)
 		}

@@ -38,7 +38,28 @@ func validateApply(params ApplyParams) error {
 	return nil
 }
 
+// applyOperationAliases maps qualified input.* action aliases to the canonical
+// short operation names used by summaries and existing callers.
+var applyOperationAliases = map[string]string{
+	"input.add":          "add",
+	"input.set":          "set",
+	"input.rename":       "rename",
+	"input.delete":       "delete",
+	"input.event_add":    "event_add",
+	"input.event_delete": "event_delete",
+}
+
+func canonicalApplyOperation(operation string) string {
+	if canonical, ok := applyOperationAliases[operation]; ok {
+		return canonical
+	}
+
+	return operation
+}
+
 func validateApplyOperation(index int, operation ApplyOperation) error {
+	operation.Operation = canonicalApplyOperation(operation.Operation)
+
 	target := operation.Action
 
 	if target == "" {

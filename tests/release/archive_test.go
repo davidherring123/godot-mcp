@@ -61,6 +61,31 @@ func TestAddonEntriesMatchCanonicalTree(t *testing.T) {
 	}
 }
 
+func TestAddonEntriesExcludeGeneratedUIDSidecars(t *testing.T) {
+	directory := t.TempDir()
+	for name, content := range map[string]string{
+		"plugin.cfg":    "[plugin]\n",
+		"plugin.gd":     "@tool\nextends EditorPlugin\n",
+		"plugin.gd.uid": "uid://generated\n",
+	} {
+		if err := os.WriteFile(filepath.Join(directory, name), []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	entries, err := release.AddonEntries(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("expected plugin config and script only, got %v", entries)
+	}
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name, ".uid") {
+			t.Fatalf("generated UID included in release: %s", entry.Name)
+		}
+	}
+}
+
 func TestHostBinaryLayout(t *testing.T) {
 	cases := []struct {
 		target release.Target
@@ -236,6 +261,9 @@ func canonicalNames(t *testing.T, directory string) []string {
 
 		switch entry.Name() {
 		case ".DS_Store", "Thumbs.db", ".godot-mcp-managed":
+			return nil
+		}
+		if strings.HasSuffix(entry.Name(), ".uid") {
 			return nil
 		}
 

@@ -12,4 +12,4 @@ window/size/viewport_width=800
 
 [editor_plugins]
 
-enabled=PackedStringArray("res://addons/godot_mcp/plugin.cfg")
+enabled=PackedStringArray("res://addons/godot_mcp/plugin.cfg", "res://test_scan/plugin.cfg")
